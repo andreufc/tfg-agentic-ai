@@ -1,0 +1,58 @@
+# ========================
+# Environment & Secrets
+# ========================
+.env
+
+# ========================
+# Python
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+*.whl
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.venv/
+
+# ========================
+# Jupyter / Colab
+# ========================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ========================
+# IDE & Editor
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ========================
+# Logs & Outputs
+# ========================
+logs/
+*.log
+wandb/
+
+# ========================
+# Model artifacts
+# ========================
+models/
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.gguf
