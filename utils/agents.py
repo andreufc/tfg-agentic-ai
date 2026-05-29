@@ -7,10 +7,35 @@ and collaboration graphs used in the thesis experiments.
 
 from __future__ import annotations
 
-from typing import Any
+import random
+from typing import Any, Optional
 
+import torch
 from langchain_huggingface import HuggingFacePipeline  # type: ignore
 from transformers import pipeline as hf_pipeline  # type: ignore
+
+
+def _seed_all(seed: int) -> None:
+    """Seed every relevant RNG source for fully reproducible generation.
+
+    Sets the seed on Python's ``random`` module, NumPy (if available),
+    PyTorch (CPU and all CUDA devices), and the HuggingFace/CUDA
+    deterministic-algorithm flag so that the complete sequence of
+    stochastic generation calls within a run is deterministic.
+
+    Parameters
+    ----------
+    seed : int
+        The integer seed value to apply everywhere.
+    """
+    random.seed(seed)
+    try:
+        import numpy as np  # type: ignore
+        np.random.seed(seed)
+    except ImportError:
+        pass
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 def build_hf_langchain_llm(
@@ -21,6 +46,7 @@ def build_hf_langchain_llm(
     top_p: float = 0.95,
     top_k: int = 50,
     return_full_text: bool = False,
+    seed: Optional[int] = None,
     **kwargs: Any,
 ) -> HuggingFacePipeline:
     """Wrap a loaded HF model as a LangChain-compatible LLM.
@@ -42,12 +68,20 @@ def build_hf_langchain_llm(
     return_full_text : bool
         If ``False`` (default), only the generated continuation is
         returned; if ``True``, the prompt is prepended to the output.
+    seed : int | None
+        If provided, all RNG sources (Python random, NumPy, PyTorch CPU
+        and CUDA) are seeded before the pipeline is created, making the
+        entire generation sequence within a run fully reproducible.
+        Pass ``None`` (default) to keep stochastic behaviour.
 
     Returns
     -------
     HuggingFacePipeline
         A LangChain LLM wrapping the HF pipeline.
     """
+    if seed is not None:
+        _seed_all(seed)
+
     pipe = hf_pipeline(
         "text-generation",
         model=model,

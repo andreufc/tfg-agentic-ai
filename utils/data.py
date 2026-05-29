@@ -1,7 +1,7 @@
 """
 data.py — Dataset loading and preprocessing utilities.
 
-Provides thin wrappers around 🤗 Datasets for GSM8K and MMLU,
+Provides thin wrappers around Hugging Face Datasets for GSM8K and MMLU,
 with standardised column names and optional subsampling.
 """
 
@@ -52,6 +52,30 @@ def extract_gsm8k_answer(answer_text: str) -> str:
     if "####" in answer_text:
         return answer_text.split("####")[-1].replace(',', '').strip()
     return answer_text.strip()
+
+
+def format_gsm8k_prompt(question: str) -> str:
+    """Format a GSM8K question into a prompt string with answer-format instructions.
+
+    Appends a standardised instruction telling the model to provide
+    its final numerical answer in the ``#### <number>`` format used
+    by the GSM8K dataset.
+
+    Parameters
+    ----------
+    question : str
+        The raw GSM8K question text.
+
+    Returns
+    -------
+    str
+        A formatted prompt ready to be sent to a model.
+    """
+    return (
+        f"{question}\n\n"
+        "IMPORTANT: Provide the final numerical answer at the very end "
+        "formatted exactly as '#### [number]'."
+    )
 
 
 # ---------------------------------------------------------------------------
