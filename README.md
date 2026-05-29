@@ -6,7 +6,7 @@ This thesis explores using **multi-agent collaboration** (a *Society of Minds* a
 
 The goal is to develop an optimised pipeline where specialised agents collaboratively solve tasks in **GSM8K** and **MMLU**, aiming for accuracy gains over single-agent inference with minimal resources.
 
-**Tech stack:** LangChain (LCEL) for compositional agent calls · LangGraph for stateful collaboration graphs · W&B for experiment tracking · Google Colab T4 GPU (16 GB VRAM).
+**Tech stack:** LangChain (LCEL) for compositional agent calls · LangGraph for stateful collaboration graphs · W&B for experiment tracking · Google Colab / Kaggle T4 GPU (16 GB VRAM).
 
 ---
 
@@ -14,11 +14,11 @@ The goal is to develop an optimised pipeline where specialised agents collaborat
 
 ```
 tfg-agentic-ai/
-├── notebooks/          # Colab notebooks (core experiments)
+├── notebooks/          # Colab / Kaggle notebooks (core experiments)
 │   └── ...
 ├── utils/              # Shared Python utilities
 │   ├── __init__.py
-│   ├── config.py       # Environment & secrets loader (Colab + local)
+│   ├── config.py       # Environment & secrets loader (Colab + Kaggle + local)
 │   ├── data.py         # Dataset loading (GSM8K, MMLU)
 │   ├── models.py       # HF model loading with 4-bit quantisation
 │   ├── evaluation.py   # Accuracy metrics & result display
@@ -27,7 +27,7 @@ tfg-agentic-ai/
 ├── .env.example        # Template for required secrets
 ├── .gitignore          # Files excluded from version control
 ├── requirements.txt    # Python dependencies
-├── setup.py            # Colab bootstrap script
+├── setup.py            # Colab / Kaggle bootstrap script
 ├── LICENSE             # MIT License
 ├── CODE_OF_CONDUCT.md  # Contributor Covenant
 └── README.md           # ← You are here
@@ -64,9 +64,21 @@ Open any notebook from `notebooks/` in Colab, then add a first cell:
 import setup  # auto-loads secrets from Colab userdata
 ```
 
-> **Note:** Store your `HF_TOKEN` and `WANDB_API_KEY` in
+> **Note:** Store your `HF_TOKEN`, `WANDB_API_KEY`, and `GITHUB_TOKEN` in
 > [Colab Secrets](https://colab.research.google.com/) (🔑 icon in the sidebar)
 > so `setup.py` can pick them up automatically.
+
+### 4. Run on Kaggle
+
+1. Upload a notebook from `notebooks/` to a Kaggle kernel.
+2. Add the following secrets via **Add-ons → Secrets**:
+   - `GITHUB_TOKEN` — GitHub PAT with `repo` read scope
+   - `HF_TOKEN` — Hugging Face read-access token
+   - `WANDB_API_KEY` — Weights & Biases API key
+3. Enable each secret for the notebook.
+4. Enable **GPU T4 × 2** (or the accelerator of your choice) in notebook settings.
+
+The first code cell will automatically detect Kaggle, clone the repo, and load secrets.
 
 ---
 
@@ -74,7 +86,7 @@ import setup  # auto-loads secrets from Colab userdata
 
 | Module | Purpose |
 |---|---|
-| `utils.config` | Load secrets from `.env` (local) or Colab userdata |
+| `utils.config` | Load secrets from `.env` (local), Colab userdata, or Kaggle Secrets |
 | `utils.data` | Load & subsample GSM8K / MMLU datasets |
 | `utils.models` | Load HF models with NF4 quantisation for T4 GPUs |
 | `utils.evaluation` | Compute accuracy (numeric match / letter match) |

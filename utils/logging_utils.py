@@ -13,10 +13,11 @@ from typing import Any, Optional
 import wandb  # type: ignore
 
 
-# Detect Google Colab environment
+# Detect cloud runtime environment
 _IN_COLAB = "COLAB_RELEASE_TAG" in os.environ or "COLAB_BACKEND_VERSION" in os.environ
+_IN_KAGGLE = "KAGGLE_KERNEL_RUN_TYPE" in os.environ
 
-_DEFAULT_PROJECT = "agentic-collab" if _IN_COLAB else "dev-agentic-collab"
+_DEFAULT_PROJECT = "agentic-collab" if (_IN_COLAB or _IN_KAGGLE) else "dev-agentic-collab"
 
 
 def init_wandb(
