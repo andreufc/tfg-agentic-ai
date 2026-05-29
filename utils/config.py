@@ -23,6 +23,7 @@ def load_env(in_colab: bool = False) -> None:
 
             os.environ.setdefault("HF_TOKEN", userdata.get("HF_TOKEN"))
             os.environ.setdefault("WANDB_API_KEY", userdata.get("WANDB_API_KEY"))
+            os.environ.setdefault("GITHUB_TOKEN", userdata.get("GITHUB_TOKEN") or "")
             print("✅ Secrets loaded from Colab userdata.")
         else:
             # Running locally or in CI
