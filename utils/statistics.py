@@ -6,10 +6,11 @@ Provides:
     - pooled_accuracy:         Unbiased point estimate of accuracy
     - wilson_ci_clustered:     Wilson CI adjusted for within-problem
                                correlation via the Design Effect (DEFF)
-    - mean_time_clustered:     Cluster-robust mean and t-based CI for
-                               execution times
-    - fit_time_distribution:   MLE fitting of Gamma and Log-Normal
-                               distributions with AIC comparison
+    - time_statistics:         Distribution-free execution time summary
+                               with BCa bootstrap CI (no parametric
+                               assumptions)
+    - welch_t_test_times:      Welch t-test comparing per-problem mean
+                               times between two systems
 
 All functions expect data as NumPy arrays of shape ``(N, m)`` where
 ``N`` = number of problems and ``m`` = number of seeds (repetitions).
@@ -19,11 +20,10 @@ References
 - Wilson (1927), JASA 22(158), 209–212.
 - Rao & Scott (1992), Biometrics 48(2), 577–585.
 - Korn & Graubard (1998), Survey Methodology 24, 193–201.
+- Efron & Tibshirani (1993), An Introduction to the Bootstrap, Ch. 14.
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -74,16 +74,16 @@ def wilson_ci_clustered(
     dict
         Keys:
 
-        - ``p_hat``    – pooled accuracy (unbiased point estimate)
-        - ``ci_lower`` – lower bound of Wilson CI
-        - ``ci_upper`` – upper bound of Wilson CI
-        - ``deff``     – estimated design effect
-        - ``n_eff``    – effective sample size
-        - ``icc``      – intra-cluster correlation coefficient
-        - ``se``       – cluster-robust standard error of ``p_hat``
-        - ``n_total``  – total number of observations (N × m)
-        - ``n_problems`` – number of problems (N)
-        - ``n_seeds``  – number of seeds (m)
+        - p_hat    – pooled accuracy (unbiased point estimate)
+        - ci_lower – lower bound of Wilson CI
+        - ci_upper – upper bound of Wilson CI
+        - deff     – estimated design effect
+        - n_eff    – effective sample size
+        - icc      – intra-cluster correlation coefficient
+        - se       – cluster-robust standard error of p_hat
+        - n_total  – total number of observations (N × m)
+        - n_problems – number of problems (N)
+        - n_seeds  – number of seeds (m)
     """
     arr = np.asarray(correctness, dtype=float)
     if arr.ndim != 2:
@@ -156,40 +156,49 @@ def wilson_ci_clustered(
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Execution-time estimation
+# Execution-time estimation (nonparametric)
 # ───────────────────────────────────────────────────────────────────────
 
-def mean_time_clustered(
+def time_statistics(
     times: ArrayLike,
     alpha: float = 0.05,
-) -> dict[str, float]:
-    """Cluster-robust mean and *t*-based CI for execution times.
+    n_bootstrap: int = 9999,
+) -> dict:
+    """Distribution-free execution time summary with BCa bootstrap CI.
 
-    Computes the unbiased pooled mean, standard error accounting for
-    within-problem correlation, and a confidence interval using the
-    *t*-distribution with ``N − 1`` degrees of freedom.
+    Makes no parametric assumptions about the underlying distribution.
+    The BCa bootstrap CI corrects for both bias and skewness, making it
+    well-suited for the right-skewed, heavy-tailed nature of latency data.
 
     Parameters
     ----------
     times : array-like of shape ``(N, m)``
         Execution time matrix (positive reals, in seconds).
+        N = number of problems, m = number of seeds.
     alpha : float, default 0.05
         Significance level (0.05 → 95 % CI).
+    n_bootstrap : int, default 9999
+        Number of bootstrap replications for the BCa CI.
 
     Returns
     -------
     dict
         Keys:
 
-        - ``mean``       – pooled mean time (unbiased)
-        - ``se``         – cluster-robust standard error
-        - ``ci_lower``   – lower bound of *t*-based CI
-        - ``ci_upper``   – upper bound of *t*-based CI
-        - ``var_cluster``– sample variance of per-problem means
-        - ``var_total``  – total (marginal) sample variance
-        - ``n_problems`` – number of problems
-        - ``n_seeds``    – number of seeds
-        - ``df``         – degrees of freedom (N − 1)
+        - mean             – sample mean of all N×m observations
+        - variance         – sample variance (Bessel-corrected, ddof=1)
+        - std              – sample standard deviation
+        - cv               – coefficient of variation (std / mean)
+        - median           – median; convenience alias for percentiles['p50']
+        - percentiles      – dict with keys p25, p50, p75, p95
+        - ci_lower         – BCa bootstrap CI lower bound for the mean
+        - ci_upper         – BCa bootstrap CI upper bound for the mean
+        - alpha            – significance level used
+        - n_bootstrap      – number of bootstrap replications
+        - n_problems       – N
+        - n_seeds          – m
+        - n_total          – N × m
+        - per_problem_means– 1-D array of shape (N,), for downstream t-tests
     """
     arr = np.asarray(times, dtype=float)
     if arr.ndim != 2:
@@ -197,139 +206,122 @@ def mean_time_clustered(
             f"Expected 2-D array of shape (N, m), got shape {arr.shape}"
         )
     n_problems, n_seeds = arr.shape
+    n_total = n_problems * n_seeds
+    arr_flat = arr.ravel()
 
-    # Per-problem means  T̄_i = (1/m) Σ_j T_{i,j}
-    t_bar_i = np.mean(arr, axis=1)
+    mean = float(np.mean(arr_flat))
+    variance = float(np.var(arr_flat, ddof=1))
+    std = float(np.std(arr_flat, ddof=1))
+    cv = std / mean if mean != 0.0 else float("nan")
 
-    mu_hat = float(np.mean(t_bar_i))
+    p25, p50, p75, p95 = np.percentile(arr_flat, [25, 50, 75, 95])
+    percentiles = {
+        "p25": float(p25),
+        "p50": float(p50),
+        "p75": float(p75),
+        "p95": float(p95),
+    }
+    median = percentiles["p50"]
 
-    # Cluster-robust variance  (unbiased)
-    var_cluster = float(np.var(t_bar_i, ddof=1))
+    # BCa bootstrap CI for the mean — corrects for bias and skewness
+    boot_result = sp_stats.bootstrap(
+        (arr_flat,),
+        statistic=np.mean,
+        n_resamples=n_bootstrap,
+        confidence_level=1.0 - alpha,
+        method="BCa",
+        random_state=0,
+    )
+    ci_lower = float(boot_result.confidence_interval.low)
+    ci_upper = float(boot_result.confidence_interval.high)
 
-    # Standard error of μ̂
-    se = float(np.sqrt(var_cluster / n_problems))
-
-    # Total marginal variance (unbiased)
-    var_total = float(np.var(arr, ddof=1))
-
-    # t-based CI
-    df = n_problems - 1
-    t_crit = sp_stats.t.ppf(1.0 - alpha / 2.0, df=df)
-    ci_lower = mu_hat - t_crit * se
-    ci_upper = mu_hat + t_crit * se
+    per_problem_means = np.mean(arr, axis=1)
 
     return {
-        "mean": mu_hat,
-        "se": se,
-        "ci_lower": float(ci_lower),
-        "ci_upper": float(ci_upper),
-        "var_cluster": var_cluster,
-        "var_total": var_total,
+        "mean": mean,
+        "variance": variance,
+        "std": std,
+        "cv": cv,
+        "median": median,
+        "percentiles": percentiles,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "alpha": alpha,
+        "n_bootstrap": n_bootstrap,
         "n_problems": n_problems,
         "n_seeds": n_seeds,
-        "df": df,
+        "n_total": n_total,
+        "per_problem_means": per_problem_means,
     }
 
 
-# ───────────────────────────────────────────────────────────────────────
-# Distribution fitting
-# ───────────────────────────────────────────────────────────────────────
+def welch_t_test_times(
+    per_problem_means_a: ArrayLike,
+    per_problem_means_b: ArrayLike,
+) -> dict:
+    """Welch t-test comparing execution times between two systems.
 
-def fit_time_distribution(
-    times_flat: ArrayLike,
-) -> dict[str, Any]:
-    """Fit Gamma and Log-Normal distributions via MLE and compare via AIC.
+    By the CLT, per-problem means (each averaged over m seeds) are
+    approximately normal even when individual times are heavily skewed,
+    provided m is not tiny.  Welch's variant does not assume equal
+    variances — essential when comparing systems with different call
+    patterns.
 
     Parameters
     ----------
-    times_flat : array-like, 1-D
-        Pooled execution times (all problems × all seeds).  All values
-        must be strictly positive.
+    per_problem_means_a : array-like, 1-D
+        Per-problem mean times for system A
+        (``time_statistics(...)['per_problem_means']``).
+    per_problem_means_b : array-like, 1-D
+        Per-problem mean times for system B.
 
     Returns
     -------
     dict
         Keys:
 
-        - ``preferred``  – ``'gamma'`` or ``'lognorm'`` (lower AIC)
-        - ``gamma``      – sub-dict with ``'params'``, ``'aic'``,
-          ``'log_likelihood'``, ``'mean'``, ``'var'``, ``'ks_statistic'``,
-          ``'ks_pvalue'``
-        - ``'lognorm'``  – same structure as ``gamma``
-
-    Notes
-    -----
-    The KS p-value can be used for an absolute goodness-of-fit check:
-    if *both* p-values are small the data may follow neither distribution
-    well.
+        - t_statistic      – Welch t-statistic
+        - p_value          – two-sided p-value
+        - df               – Welch–Satterthwaite degrees of freedom
+        - mean_a           – mean of system A
+        - mean_b           – mean of system B
+        - mean_diff        – difference in means (A − B)
+        - significant_at_05– bool: p < 0.05
     """
-    arr = np.asarray(times_flat, dtype=float).ravel()
-    if np.any(arr <= 0):
-        raise ValueError("All execution times must be strictly positive.")
-    n = len(arr)
+    a = np.asarray(per_problem_means_a, dtype=float)
+    b = np.asarray(per_problem_means_b, dtype=float)
 
-    results: dict[str, Any] = {}
+    t_stat, p_value = sp_stats.ttest_ind(a, b, equal_var=False)
 
-    # ── Gamma ──
-    gamma_a, gamma_loc, gamma_scale = sp_stats.gamma.fit(arr, floc=0)
-    gamma_ll = float(np.sum(sp_stats.gamma.logpdf(arr, gamma_a, loc=0, scale=gamma_scale)))
-    gamma_aic = -2.0 * gamma_ll + 2.0 * 2  # 2 free params (shape, scale)
-    gamma_ks, gamma_ksp = sp_stats.kstest(
-        arr, "gamma", args=(gamma_a, 0, gamma_scale)
-    )
-    gamma_mean = gamma_a * gamma_scale
-    gamma_var = gamma_a * gamma_scale ** 2
+    mean_a = float(np.mean(a))
+    mean_b = float(np.mean(b))
 
-    results["gamma"] = {
-        "params": {"shape": float(gamma_a), "scale": float(gamma_scale)},
-        "aic": float(gamma_aic),
-        "log_likelihood": gamma_ll,
-        "mean": float(gamma_mean),
-        "var": float(gamma_var),
-        "ks_statistic": float(gamma_ks),
-        "ks_pvalue": float(gamma_ksp),
+    # Welch–Satterthwaite degrees of freedom
+    var_a = float(np.var(a, ddof=1))
+    var_b = float(np.var(b, ddof=1))
+    na, nb = len(a), len(b)
+    numerator = (var_a / na + var_b / nb) ** 2
+    denominator = (var_a / na) ** 2 / (na - 1) + (var_b / nb) ** 2 / (nb - 1)
+    df = numerator / denominator if denominator != 0.0 else float("nan")
+
+    return {
+        "t_statistic": float(t_stat),
+        "p_value": float(p_value),
+        "df": float(df),
+        "mean_a": mean_a,
+        "mean_b": mean_b,
+        "mean_diff": mean_a - mean_b,
+        "significant_at_05": bool(p_value < 0.05),
     }
-
-    # ── Log-Normal ──
-    ln_s, ln_loc, ln_scale = sp_stats.lognorm.fit(arr, floc=0)
-    ln_mu = float(np.log(ln_scale))   # scipy parameterisation: scale = exp(μ)
-    ln_sigma = float(ln_s)
-    ln_ll = float(np.sum(sp_stats.lognorm.logpdf(arr, ln_s, loc=0, scale=ln_scale)))
-    ln_aic = -2.0 * ln_ll + 2.0 * 2
-    ln_ks, ln_ksp = sp_stats.kstest(
-        arr, "lognorm", args=(ln_s, 0, ln_scale)
-    )
-    ln_mean = float(np.exp(ln_mu + ln_sigma ** 2 / 2.0))
-    ln_var = float((np.exp(ln_sigma ** 2) - 1.0) * np.exp(2.0 * ln_mu + ln_sigma ** 2))
-
-    results["lognorm"] = {
-        "params": {"mu": ln_mu, "sigma": ln_sigma},
-        "aic": float(ln_aic),
-        "log_likelihood": ln_ll,
-        "mean": ln_mean,
-        "var": ln_var,
-        "ks_statistic": float(ln_ks),
-        "ks_pvalue": float(ln_ksp),
-    }
-
-    # ── Comparison ──
-    results["preferred"] = (
-        "gamma" if results["gamma"]["aic"] < results["lognorm"]["aic"] else "lognorm"
-    )
-    results["aic_difference"] = abs(
-        results["gamma"]["aic"] - results["lognorm"]["aic"]
-    )
-
-    return results
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Pretty-printing helper
+# Pretty-printing helpers
 # ───────────────────────────────────────────────────────────────────────
 
 def print_accuracy_report(
     label: str,
-    result: dict[str, float],
+    result: dict,
     *,
     as_percentage: bool = True,
 ) -> None:
@@ -351,41 +343,46 @@ def print_accuracy_report(
 
 def print_time_report(
     label: str,
-    result: dict[str, float],
+    result: dict,
 ) -> None:
-    """Print a formatted execution time report from :func:`mean_time_clustered`."""
+    """Print a formatted execution time report from :func:`time_statistics`."""
+    ci_pct = int(round((1.0 - result["alpha"]) * 100))
+    pct = result["percentiles"]
+    iqr = pct["p75"] - pct["p25"]
     print(f"\n{'=' * 55}")
     print(f"  {label}")
     print(f"{'=' * 55}")
-    print(f"  Mean time (s)              {result['mean']:>9.4f}")
-    print(f"  Cluster-robust SE (s)      {result['se']:>9.4f}")
-    print(f"  95% CI (s)                 [{result['ci_lower']:.4f}, {result['ci_upper']:.4f}]")
-    print(f"  Cluster variance           {result['var_cluster']:>9.4f}")
-    print(f"  Total variance             {result['var_total']:>9.4f}")
-    print(f"  d.f.                       {result['df']}")
+    print(f"  Mean (s)                   {result['mean']:>9.4f}")
+    print(f"  Std (s)                    {result['std']:>9.4f}")
+    print(f"  Variance (s²)              {result['variance']:>9.4f}")
+    print(f"  CV                         {result['cv']:>9.4f}")
+    print(f"  {ci_pct}% BCa CI (s)             [{result['ci_lower']:.4f}, {result['ci_upper']:.4f}]")
+    print(f"  ── Percentiles ──")
+    print(f"  Median / P50 (s)           {pct['p50']:>9.4f}")
+    print(f"  P25 (s)                    {pct['p25']:>9.4f}")
+    print(f"  P75 (s)                    {pct['p75']:>9.4f}")
+    print(f"  IQR (s)                    {iqr:>9.4f}")
+    print(f"  P95 (s)                    {pct['p95']:>9.4f}")
+    print(f"  ── Sample ──")
+    print(f"  Problems × Seeds           {result['n_problems']} × {result['n_seeds']}  (n={result['n_total']})")
+    print(f"  Bootstrap replications     {result['n_bootstrap']}")
     print(f"{'=' * 55}\n")
 
 
-def print_distribution_report(
+def print_welch_report(
     label: str,
-    result: dict[str, Any],
+    result: dict,
 ) -> None:
-    """Print a formatted distribution comparison from :func:`fit_time_distribution`."""
+    """Print a formatted Welch t-test report from :func:`welch_t_test_times`."""
+    sig = "YES" if result["significant_at_05"] else "NO"
     print(f"\n{'=' * 55}")
-    print(f"  {label} — Distribution Fit")
+    print(f"  {label} — Welch t-test")
     print(f"{'=' * 55}")
-    for dist_name in ("gamma", "lognorm"):
-        d = result[dist_name]
-        pretty = "Gamma" if dist_name == "gamma" else "Log-Normal"
-        winner = " <-- preferred" if result["preferred"] == dist_name else ""
-        print(f"\n  {pretty}{winner}")
-        print(f"    AIC               {d['aic']:>12.2f}")
-        print(f"    Log-likelihood    {d['log_likelihood']:>12.2f}")
-        print(f"    Fitted mean       {d['mean']:>12.4f} s")
-        print(f"    Fitted variance   {d['var']:>12.4f} s²")
-        print(f"    KS statistic      {d['ks_statistic']:>12.4f}")
-        print(f"    KS p-value        {d['ks_pvalue']:>12.4f}")
-        params = d["params"]
-        print(f"    Parameters        {params}")
-    print(f"\n  Delta-AIC = {result['aic_difference']:.2f}")
+    print(f"  Mean A (s)                 {result['mean_a']:>9.4f}")
+    print(f"  Mean B (s)                 {result['mean_b']:>9.4f}")
+    print(f"  Difference A − B (s)       {result['mean_diff']:>+9.4f}")
+    print(f"  t-statistic                {result['t_statistic']:>9.4f}")
+    print(f"  Degrees of freedom         {result['df']:>9.2f}")
+    print(f"  p-value                    {result['p_value']:>9.4f}")
+    print(f"  Significant at α=0.05      {sig:>9}")
     print(f"{'=' * 55}\n")

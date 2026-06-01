@@ -59,6 +59,31 @@ def init_wandb(
     )
 
 
+def define_wandb_chart_only_metrics(
+    prefixes: Optional[list[str]] = None,
+) -> None:
+    """Mark per-sample metric prefixes as chart-only (no summary).
+
+    By default, W&B automatically promotes the **last** logged value
+    of every metric key into run.summary.  For per-sample metrics
+    (e.g. gsm8k_sample/*, mmlu_sample/*) this clutters the summary with a single, 
+    non-representative 0/1 value.
+
+    Calling this function right after :func:`init_wandb` tells W&B
+    to keep those keys in the **history** (charts) only.
+
+    Parameters
+    ----------
+    prefixes : list[str] | None
+        Glob-style metric prefixes to exclude from summary.
+        Defaults to ``["gsm8k_sample/*", "mmlu_sample/*"]``.
+    """
+    if prefixes is None:
+        prefixes = ["gsm8k_sample/*", "mmlu_sample/*"]
+    for prefix in prefixes:
+        wandb.define_metric(prefix, summary="none")
+
+
 def log_metrics(metrics: dict[str, Any], step: Optional[int] = None) -> None:
     """Log a dictionary of metrics to the active W&B run."""
     wandb.log(metrics, step=step)

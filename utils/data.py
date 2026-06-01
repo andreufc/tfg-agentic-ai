@@ -26,7 +26,7 @@ def load_gsm8k(
     Parameters
     ----------
     split : str
-        Dataset split (``"train"`` or ``"test"``).
+        Dataset split (train or test).
     n_samples : int | None
         If given, randomly subsample to this many examples.
     seed : int
@@ -35,7 +35,7 @@ def load_gsm8k(
     Returns
     -------
     Dataset
-        A HF Dataset with columns ``question`` and ``answer``.
+        A HF Dataset with columns question and answer.
     """
     ds = load_dataset("openai/gsm8k", "main", split=split)
     if n_samples is not None:
@@ -47,11 +47,20 @@ def extract_gsm8k_answer(answer_text: str) -> str:
     """Extract the final numeric answer from a GSM8K answer string.
 
     GSM8K answers contain step-by-step reasoning followed by
-    ``#### <number>``. This function returns only the number.
+    ``#### <number>``. This function returns the canonicalized number
+    (trailing dots and redundant zeros stripped).
     """
     if "####" in answer_text:
-        return answer_text.split("####")[-1].replace(',', '').strip()
-    return answer_text.strip()
+        raw = answer_text.split("####")[-1].replace(',', '').strip()
+    else:
+        raw = answer_text.strip()
+    # Canonicalize for consistent comparison with predictions
+    raw = raw.rstrip(".")
+    try:
+        from utils.evaluation import _canonicalize_number
+        return _canonicalize_number(raw)
+    except (ValueError, OverflowError, ImportError):
+        return raw
 
 
 def format_gsm8k_prompt(question: str) -> str:

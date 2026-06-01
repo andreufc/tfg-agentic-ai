@@ -56,3 +56,5 @@ models/
 *.pth
 *.safetensors
 *.gguf
+
+CLAUDE.md
