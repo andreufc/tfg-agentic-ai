@@ -144,6 +144,5 @@ def format_mmlu_prompt(question: str, choices: Sequence[str]) -> str:
         f"{label}) {choice}" for label, choice in zip(labels, choices)
     )
     return (
-        f"Question: {question}\n\n"
-        f"Choices:\n{choices_block}"
+        f"{question}\n\n{choices_block}"
     )

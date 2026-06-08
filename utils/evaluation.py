@@ -155,14 +155,20 @@ _LETTER_MAP = {0: "A", 1: "B", 2: "C", 3: "D"}
 def normalize_mmlu_answer(text: str) -> str | None:
     """Extract a single A/B/C/D letter from a model response.
 
-    Handles common noise that models add around the letter, such as
-    trailing dots A.), parentheses ((B)), or colons
-    (C:).  Looks first for an explicit Final Answer: X
-    pattern (case-insensitive), then falls back to generic letter
-    extraction.
+    Extraction priority:
+
+    1. EvalScope-style ``ANSWER: X`` — matched case-sensitively on the
+       word ``ANSWER`` so it cannot accidentally fire on ``Final Answer: X``.
+    2. ``Final Answer: X`` — legacy / fallback for older prompt formats.
+    3. Direct single-letter response after stripping punctuation.
+    4. First standalone A–D letter found anywhere in the text.
     """
-    # Priority: explicit "Final Answer: X" pattern
-    # Allow optional trailing punctuation:  "Final Answer: A." or "Final Answer: B)"
+    # Priority 1: EvalScope format — uppercase 'ANSWER: X' (letter A–D any case)
+    ans_match = re.search(r"ANSWER\s*:\s*([A-Da-d])", text)
+    if ans_match:
+        return ans_match.group(1).upper()
+
+    # Priority 2: case-insensitive 'Final Answer: X' (legacy)
     fa_match = re.search(
         r"final\s+answer\s*:\s*([A-Da-d])[.)\s]?",
         text,
