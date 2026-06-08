@@ -279,10 +279,15 @@ class GpuUtilSampler:
         Returns
         -------
         dict with keys:
-            gpu_util_mean  — mean GPU compute utilization (%)
-            gpu_util_max   — peak GPU compute utilization (%)
-            mem_util_mean  — mean GPU memory bandwidth utilization (%)
-            n_samples      — number of samples collected
+            gpu_util_mean   — mean GPU compute utilization (%)
+            gpu_util_max    — peak GPU compute utilization (%)
+            mem_util_mean   — mean GPU memory bandwidth utilization (%)
+            vram_used_mean_mb — mean absolute VRAM in use (MB)
+            vram_used_max_mb  — max absolute VRAM in use (MB)
+            temp_mean_c     — mean GPU temperature (°C)
+            temp_max_c      — max GPU temperature (°C)
+            sm_clock_mean_mhz — mean SM clock frequency (MHz)
+            n_samples       — number of samples collected
         All numeric values are 0.0 / 0 when pynvml is unavailable.
         """
         self._stop_event.set()
@@ -292,19 +297,33 @@ class GpuUtilSampler:
 
         if not self._samples:
             return {
-                "gpu_util_mean": 0.0,
-                "gpu_util_max":  0.0,
-                "mem_util_mean": 0.0,
-                "n_samples":     0,
+                "gpu_util_mean":    0.0,
+                "gpu_util_max":     0.0,
+                "mem_util_mean":    0.0,
+                "vram_used_mean_mb": 0.0,
+                "vram_used_max_mb":  0.0,
+                "temp_mean_c":      0.0,
+                "temp_max_c":       0.0,
+                "sm_clock_mean_mhz": 0.0,
+                "n_samples":        0,
             }
 
-        gpu_vals = [s[0] for s in self._samples]
-        mem_vals = [s[1] for s in self._samples]
+        gpu_vals   = [s[0] for s in self._samples]
+        mem_vals   = [s[1] for s in self._samples]
+        vram_vals  = [s[2] for s in self._samples]
+        temp_vals  = [s[3] for s in self._samples]
+        clock_vals = [s[4] for s in self._samples]
+        n = len(self._samples)
         return {
-            "gpu_util_mean": round(sum(gpu_vals) / len(gpu_vals), 2),
-            "gpu_util_max":  round(max(gpu_vals), 2),
-            "mem_util_mean": round(sum(mem_vals) / len(mem_vals), 2),
-            "n_samples":     len(self._samples),
+            "gpu_util_mean":    round(sum(gpu_vals)   / n, 2),
+            "gpu_util_max":     round(max(gpu_vals),     2),
+            "mem_util_mean":    round(sum(mem_vals)   / n, 2),
+            "vram_used_mean_mb": round(sum(vram_vals)  / n, 2),
+            "vram_used_max_mb":  round(max(vram_vals),   2),
+            "temp_mean_c":      round(sum(temp_vals)  / n, 2),
+            "temp_max_c":       round(max(temp_vals),    2),
+            "sm_clock_mean_mhz": round(sum(clock_vals) / n, 2),
+            "n_samples":        n,
         }
 
     # ---- context manager support ----
@@ -325,7 +344,33 @@ class GpuUtilSampler:
                 return  # could not resolve the device — degrade to no samples
             while not self._stop_event.is_set():
                 rates = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                self._samples.append((float(rates.gpu), float(rates.memory)))
+                # Absolute VRAM in use (bytes → MB)
+                try:
+                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    vram_mb = float(mem_info.used) / 1e6
+                except Exception:
+                    vram_mb = 0.0
+                # GPU temperature (°C)
+                try:
+                    temp_c = float(pynvml.nvmlDeviceGetTemperature(
+                        handle, pynvml.NVML_TEMPERATURE_GPU
+                    ))
+                except Exception:
+                    temp_c = 0.0
+                # SM clock frequency (MHz)
+                try:
+                    sm_clock = float(pynvml.nvmlDeviceGetClockInfo(
+                        handle, pynvml.NVML_CLOCK_SM
+                    ))
+                except Exception:
+                    sm_clock = 0.0
+                self._samples.append((
+                    float(rates.gpu),
+                    float(rates.memory),
+                    vram_mb,
+                    temp_c,
+                    sm_clock,
+                ))
                 time.sleep(self._interval_s)
         except Exception:
             pass  # degrade silently; samples collected so far are preserved

@@ -2,6 +2,8 @@
 # Environment & Secrets
 # ========================
 .env
+.env.*
+secrets/
 
 # ========================
 # Python
@@ -57,4 +59,15 @@ models/
 *.safetensors
 *.gguf
 
-CLAUDE.md
+# ========================
+# Misc
+# ========================
+*.md
+!README.md
+!CODE_OF_CONDUCT.md
+
+# ========================
+# Test files
+# ========================
+tests/
+.pytest_cache/

@@ -115,7 +115,16 @@ def extract_gsm8k_prediction(agent_output: str) -> str | None:
 
     Returns ``None`` if no number is found.
     """
-    # Try the #### marker first (allow decimals and trailing dots)
+    # Try \boxed{} first (EvalScope format)
+    boxed = re.search(r"\\boxed\{(-?\d+\.?\d*)\}", agent_output)
+    if boxed:
+        raw = boxed.group(1).rstrip(".")
+        try:
+            return _canonicalize_number(raw)
+        except (ValueError, OverflowError):
+            return raw
+
+    # Try the #### marker (legacy format)
     marker = re.search(r"####\s*(-?\d+\.?\d*)", agent_output)
     if marker:
         raw = marker.group(1).rstrip(".")

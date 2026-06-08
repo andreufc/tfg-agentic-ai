@@ -92,3 +92,45 @@ def log_metrics(metrics: dict[str, Any], step: Optional[int] = None) -> None:
 def finish_wandb() -> None:
     """Gracefully finish the current W&B run."""
     wandb.finish()
+
+
+
+def log_stat_summary(
+    prefix: str,
+    stat: dict,
+    keys: list[str] | None = None,
+) -> None:
+    """Push a point estimate + CI (and ci_method) into ``wandb.summary``.
+
+    Parameters
+    ----------
+    prefix : str
+        Namespace prefix, e.g. ``"acc"``, ``"latency"``,
+        ``"overhead_latency"``, ``"vram"``.  Each key is logged as
+        ``"{prefix}/{key}"``.
+    stat : dict
+        Result dict from any ``*_statistics`` function.
+    keys : list[str] | None
+        Subset of keys to log.  Defaults to the common set:
+        ``mean`` (or ``p_hat``/``mean_peak``/``geometric_mean``),
+        ``ci_lower``, ``ci_upper``, ``ci_method``.
+    """
+    if keys is None:
+        # Pick the primary point-estimate key present in the dict.
+        for candidate in ("mean", "p_hat", "mean_peak", "geometric_mean",
+                          "mean_diff", "mean_of_ratios"):
+            if candidate in stat:
+                keys = [candidate, "ci_lower", "ci_upper"]
+                break
+        else:
+            keys = ["ci_lower", "ci_upper"]
+        if "ci_method" in stat:
+            keys = list(keys) + ["ci_method"]
+
+    for key in keys:
+        if key in stat:
+            value = stat[key]
+            # Skip non-scalar values (arrays, nested dicts)
+            if not isinstance(value, (int, float, str, bool)):
+                continue
+            wandb.run.summary[f"{prefix}/{key}"] = value  # type: ignore[union-attr]

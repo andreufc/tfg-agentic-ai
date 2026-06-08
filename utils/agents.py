@@ -47,6 +47,7 @@ def build_hf_langchain_llm(
     top_k: int = 50,
     return_full_text: bool = False,
     seed: Optional[int] = None,
+    batch_size: int = 1,
     **kwargs: Any,
 ) -> HuggingFacePipeline:
     """Wrap a loaded HF model as a LangChain-compatible LLM.
@@ -73,6 +74,13 @@ def build_hf_langchain_llm(
         and CUDA) are seeded before the pipeline is created, making the
         entire generation sequence within a run fully reproducible.
         Pass ``None`` (default) to keep stochastic behaviour.
+    batch_size : int
+        Number of sequences processed per forward pass (default ``1``).
+        Must stay at 1 for all experiments so that latency, throughput,
+        and GPU-utilization metrics remain attributable to individual
+        problems and both MAS and baseline are measured under identical
+        hardware load. Only raise this for a dedicated sustained-
+        throughput ceiling experiment, never for the main comparison.
 
     Returns
     -------
@@ -92,6 +100,7 @@ def build_hf_langchain_llm(
         top_k=top_k,
         return_full_text=return_full_text,
         do_sample=temperature > 0,
+        batch_size=batch_size,
         **kwargs,
     )
     return HuggingFacePipeline(pipeline=pipe)

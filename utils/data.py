@@ -145,7 +145,5 @@ def format_mmlu_prompt(question: str, choices: Sequence[str]) -> str:
     )
     return (
         f"Question: {question}\n\n"
-        f"Choices:\n{choices_block}\n\n"
-        "IMPORTANT: Provide your final answer at the very end formatted "
-        "exactly as 'Final Answer: [Letter]' (e.g., Final Answer: B)."
+        f"Choices:\n{choices_block}"
     )
