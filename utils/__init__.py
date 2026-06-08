@@ -10,7 +10,10 @@ This package provides helper modules for:
 - logging_utils:    W&B experiment tracking wrappers
 - statistics:       Cluster-robust statistical estimators for experiments
 - instrumentation:  Token counting, GPU peak VRAM / utilization sampling,
-                    and generation throughput helpers (v1.2.x+)
+                    and generation throughput helpers
+- warmup:           Throwaway generations to trigger one-time kernel
+                    compilation before timed evaluation 
 """
 
 from utils.config import load_env
+from utils.warmup import warmup_model
