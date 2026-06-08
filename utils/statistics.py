@@ -550,69 +550,6 @@ def vram_statistics(
     return result
 
 
-# def throughput_statistics(
-#     output_tokens: ArrayLike,
-#     elapsed_s: ArrayLike,
-#     alpha: float = 0.05,
-#     n_bootstrap: int = 9999,
-# ) -> dict:
-#     """Tailored estimator for tokens/second throughput.
-
-#     The canonical ``mean`` is the mean-of-ratios (average of per-run tps).
-#     The ratio-of-means aggregate is computed as a supplementary value only.
-
-#     Parameters
-#     ----------
-#     output_tokens : array-like of shape ``(N, m)``
-#         Output token counts per run.
-#     elapsed_s : array-like of shape ``(N, m)``
-#         Wall-clock elapsed time per run, in seconds.
-#     alpha : float, default 0.05
-#         Significance level.
-#     n_bootstrap : int, default 9999
-#         Bootstrap replications.
-
-#     Returns
-#     -------
-#     dict
-#         Keys: mean (canonical, mean-of-ratios), ci_lower, ci_upper, std, cv,
-#         median, percentiles, aggregate (supplementary), aggregate_ci,
-#         skewness, excess_kurtosis, per_problem_means, alpha, n_bootstrap,
-#         n_problems, n_seeds, n_total.
-#     """
-#     tok = np.asarray(output_tokens, dtype=float)
-#     ela = np.asarray(elapsed_s, dtype=float)
-#     if tok.ndim != 2 or ela.ndim != 2:
-#         raise ValueError(
-#             "Both output_tokens and elapsed_s must be 2-D arrays of shape (N, m)."
-#         )
-#     if tok.shape != ela.shape:
-#         raise ValueError(
-#             f"Shape mismatch: output_tokens {tok.shape} vs elapsed_s {ela.shape}."
-#         )
-
-#     tps = tok / ela
-#     base = _metric_statistics(tps, kind="ratio", alpha=alpha, n_bootstrap=n_bootstrap)
-
-#     aggregate = float(tok.sum() / ela.sum())
-
-#     tok_flat = tok.ravel()
-#     ela_flat = ela.ravel()
-#     n_runs = len(tok_flat)
-#     rng = np.random.default_rng(0)
-#     agg_resamples = np.empty(n_bootstrap)
-#     for k in range(n_bootstrap):
-#         idx = rng.integers(0, n_runs, size=n_runs)
-#         agg_resamples[k] = tok_flat[idx].sum() / ela_flat[idx].sum()
-#     agg_ci = (
-#         float(np.percentile(agg_resamples, 100.0 * alpha / 2.0)),
-#         float(np.percentile(agg_resamples, 100.0 * (1.0 - alpha / 2.0))),
-#     )
-
-#     base["aggregate"] = aggregate
-#     base["aggregate_ci"] = agg_ci
-#     return base
-
 # ───────────────────────────────────────────────────────────────────────
 # Ratios statistics: overhead ratios (latency, tokens) and throughput (tokens/s)
 # ──────────────────────────────────────────────────────────────────────
@@ -887,7 +824,7 @@ def print_accuracy_report(
     print(f"  Design Effect (DEFF)       {result['deff']:>7.3f}")
     print(f"  ICC                        {result['icc']:>7.3f}")
     print(f"  Effective sample size      {result['n_eff']:>7.1f}  (of {result['n_total']} total)")
-    print(f"  Problems × Seeds           {result['n_problems']} × {result['n_seeds']}")
+    print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}")
     print(f"{'=' * 55}\n")
 
 
@@ -901,7 +838,6 @@ def print_accuracy_stats_report(
     scale = 100.0 if as_percentage else 1.0
     unit = "%" if as_percentage else ""
     ci_pct = int(round((1.0 - result.get("alpha", 0.05)) * 100))
-    w = result["wilson"]
     print(f"\n{'=' * 55}")
     print(f"  {label}")
     print(f"{'=' * 55}")
@@ -909,11 +845,11 @@ def print_accuracy_stats_report(
     print(f"  {ci_pct}% Cluster-t CI         [{result['ci_lower'] * scale:.2f}, {result['ci_upper'] * scale:.2f}]{unit}")
     print(f"  Between-problem std        {result['between_problem_std'] * scale:>7.4f}{unit}")
     print(f"  ── Supplementary: Wilson ──")
-    print(f"  95% Wilson CI              [{w['ci_lower'] * scale:.2f}, {w['ci_upper'] * scale:.2f}]{unit}")
-    print(f"  DEFF                       {w['deff']:>7.3f}")
-    print(f"  ICC                        {w['icc']:>7.3f}")
+    print(f"  95% Wilson CI              [{result['wilson_ci_lower'] * scale:.2f}, {result['wilson_ci_upper'] * scale:.2f}]{unit}")
+    print(f"  DEFF                       {result['wilson_n_eff']:>7.3f}")
+    print(f"  ICC                        {result['wilson_icc']:>7.3f}")
     print(f"  ── Sample ──")
-    print(f"  Problems × Seeds           {result['n_problems']} × {result['n_seeds']}  (n={result['n_total']})")
+    print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}  (n={result['n_total']})")
     print(f"{'=' * 55}\n")
 
 
@@ -940,7 +876,7 @@ def print_time_report(
     print(f"  IQR (s)                    {iqr:>9.4f}")
     print(f"  P95 (s)                    {pct['p95']:>9.4f}")
     print(f"  ── Sample ──")
-    print(f"  Problems × Seeds           {result['n_problems']} × {result['n_seeds']}  (n={result['n_total']})")
+    print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}  (n={result['n_total']})")
     print(f"{'=' * 55}\n")
 
 
@@ -959,7 +895,7 @@ def print_welch_report(
     print(f"  t-statistic                {result['t_statistic']:>9.4f}")
     print(f"  Degrees of freedom         {result['df']:>9.2f}")
     print(f"  p-value                    {result['p_value']:>9.4f}")
-    print(f"  Significant at α=0.05      {sig:>9}")
+    print(f"  Significant at alpha=0.05      {sig:>9}")
     print(f"{'=' * 55}\n")
 
 
@@ -991,7 +927,7 @@ def print_metric_report(
     print(f"  IQR{u:<21}       {iqr:.4f}")
     print(f"  P95{u:<21}      {pct['p95']}")
     print(f"  ── Sample ──")
-    print(f"  Problems × Seeds           {result['n_problems']} × {result['n_seeds']}  (n={result['n_total']})")
+    print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}  (n={result['n_total']})")
     if kind == "count":
         print(f"  ── Count-specific ──")
         print(f"  Dispersion index (Fano)    {result['dispersion_index']:>9.4f}")
@@ -1032,7 +968,7 @@ def print_throughput_report(
     print(f"  P75 (tok/s)                {pct['p75']:>9.4f}")
     print(f"  P95 (tok/s)                {pct['p95']:>9.4f}")
     print(f"  ── Sample ──")
-    print(f"  Problems × Seeds           {result['n_problems']} × {result['n_seeds']}  (n={result['n_total']})")
+    print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}  (n={result['n_total']})")
     print(f"  Bootstrap replications     {result['n_bootstrap']}")
     print(f"{'=' * 55}\n")
 
@@ -1094,7 +1030,7 @@ def print_vram_report(
     print(f"  P75 (MB)                   {pct['p75']:>9.2f}")
     print(f"  P95 (MB)                   {pct['p95']:>9.2f}")
     print(f"  ── Sample ──")
-    print(f"  Problems × Seeds           {result['n_problems']} × {result['n_seeds']}  (n={result['n_total']})")
+    print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}  (n={result['n_total']})")
     if "mean_avg" in result:
         print(f"  Mean avg VRAM (MB)         {result['mean_avg']:>9.2f}")
     print(f"{'=' * 55}\n")
@@ -1104,10 +1040,10 @@ def print_mannwhitney_report(
     label: str,
     result: dict,
 ) -> None:
-    """Print a formatted Mann–Whitney U report from :func:`mann_whitney_u_test_metric`."""
+    """Print a formatted Mann-Whitney U report from :func:`mann_whitney_u_test_metric`."""
     sig = "YES" if result["significant_at_05"] else "NO"
     print(f"\n{'=' * 55}")
-    print(f"  {label} — Mann–Whitney U test")
+    print(f"  {label} — Mann-Whitney U test")
     print(f"{'=' * 55}")
     print(f"  Median A                   {result['median_a']:>9.4f}")
     print(f"  Median B                   {result['median_b']:>9.4f}")
@@ -1117,5 +1053,5 @@ def print_mannwhitney_report(
     print(f"  Alternative                {result['alternative']:>9}")
     print(f"  Rank-biserial r            {result['rank_biserial']:>9.4f}")
     print(f"  n_a / n_b                  {result['n_a']:>4} / {result['n_b']:<4}")
-    print(f"  Significant at α=0.05      {sig:>9}")
+    print(f"  Significant at alpha=0.05      {sig:>9}")
     print(f"{'=' * 55}\n")
