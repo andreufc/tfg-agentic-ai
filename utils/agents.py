@@ -44,7 +44,7 @@ def build_hf_langchain_llm(
     max_new_tokens: int = 512,
     temperature: float = 0.7,
     top_p: float = 0.95,
-    top_k: int = 50,
+    top_k: int = 20,
     return_full_text: bool = False,
     seed: Optional[int] = None,
     batch_size: int = 1,

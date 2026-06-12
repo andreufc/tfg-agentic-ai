@@ -2,11 +2,11 @@
 
 > **Final Thesis — GCED (Grau en Ciència i Enginyeria de Dades)**
 
-This thesis explores using **multi-agent collaboration** (a *Society of Minds* approach) to enhance the reasoning capabilities of **Small Language Models** (SLMs) like Phi-3 and TinyLlama, which often struggle with complex tasks.
+This thesis explores using **multi-agent collaboration** (a *Society of Minds* approach) to enhance the reasoning capabilities of **Small Language Models** (SLMs) like Mistral/Ministral-3B and Phi-3, which often struggle with complex tasks under tight resource constraints.
 
-The goal is to develop an optimised pipeline where specialised agents collaboratively solve tasks in **GSM8K** and **MMLU**, aiming for accuracy gains over single-agent inference with minimal resources.
+The goal is to develop an optimised pipeline where specialised agents collaboratively solve tasks in **GSM8K** (mathematical reasoning) and **MMLU** (knowledge retrieval), measuring not just accuracy gains over single-agent inference but also the associated costs in latency, token consumption, and GPU memory — using rigorous cluster-corrected statistical methods throughout.
 
-**Tech stack:** LangChain (LCEL) for compositional agent calls · LangGraph for stateful collaboration graphs · W&B for experiment tracking · Google Colab / Kaggle T4 GPU (16 GB VRAM).
+**Tech stack:** LangChain (LCEL) for compositional agent calls · LangGraph for stateful collaboration graphs · W&B for experiment tracking · Kaggle T4 GPU (16 GB VRAM, `batch_size=1`).
 
 ---
 
@@ -14,23 +14,31 @@ The goal is to develop an optimised pipeline where specialised agents collaborat
 
 ```
 tfg-agentic-ai/
-├── notebooks/          # Colab / Kaggle notebooks (core experiments)
-│   └── ...
-├── utils/              # Shared Python utilities
+├── notebooks/                    # Kaggle notebooks (core experiments)
+│   ├── v1.1.0 — Automated GSM8K Evaluation (LangChain)
+│   ├── v1.1.1 — Automated MMLU Evaluation (LangChain)
+│   ├── v1.2.0 — Automated GSM8K Evaluation (LangChain, revised)
+│   ├── v1.2.1 — Automated MMLU Evaluation (LangChain, revised)
+│   ├── v2.1.0 — GSM8K Single-Agent Baseline
+│   └── v2.1.1 — MMLU Single-Agent Baseline
+├── utils/                        # Shared Python utilities
 │   ├── __init__.py
-│   ├── config.py       # Environment & secrets loader (Colab + Kaggle + local)
-│   ├── data.py         # Dataset loading (GSM8K, MMLU)
-│   ├── models.py       # HF model loading with 4-bit quantisation
-│   ├── evaluation.py   # Accuracy metrics & result display
-│   ├── agents.py       # LangChain/LangGraph agent factories
-│   └── logging_utils.py# W&B experiment tracking helpers
-├── .env.example        # Template for required secrets
-├── .gitignore          # Files excluded from version control
-├── requirements.txt    # Python dependencies
-├── setup.py            # Colab / Kaggle bootstrap script
-├── LICENSE             # MIT License
-├── CODE_OF_CONDUCT.md  # Contributor Covenant
-└── README.md           # ← You are here
+│   ├── config.py                 # Secrets loader (local .env, Colab, Kaggle)
+│   ├── data.py                   # Dataset loading (GSM8K, MMLU)
+│   ├── models.py                 # HF model loading with NF4 quantisation
+│   ├── evaluation.py             # Accuracy metrics (numeric / letter match)
+│   ├── agents.py                 # LangChain LLM factory + seeded generation
+│   ├── instrumentation.py        # Token counting, GPU VRAM & utilisation tracking
+│   ├── warmup.py                 # Pre-measurement model warmup
+│   ├── statistics.py             # Cluster-corrected statistical estimators
+│   └── logging_utils.py          # W&B experiment tracking helpers
+├── .env.example                  # Template for required secrets
+├── .gitignore
+├── requirements.txt              # Python dependencies
+├── setup.py                      # Colab / Kaggle bootstrap script
+├── LICENSE                       # MIT License
+├── CODE_OF_CONDUCT.md
+└── README.md                     # ← You are here
 ```
 
 ---
@@ -49,6 +57,8 @@ cp .env.example .env
 ### 2. Install dependencies
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -76,7 +86,7 @@ import setup  # auto-loads secrets from Colab userdata
    - `HF_TOKEN` — Hugging Face read-access token
    - `WANDB_API_KEY` — Weights & Biases API key
 3. Enable each secret for the notebook.
-4. Enable **GPU T4 × 2** (or the accelerator of your choice) in notebook settings.
+4. Enable **GPU T4 × 2** in notebook settings (the model is pinned to one GPU; the second is unused by the model but available).
 
 The first code cell will automatically detect Kaggle, clone the repo, and load secrets.
 
@@ -88,10 +98,13 @@ The first code cell will automatically detect Kaggle, clone the repo, and load s
 |---|---|
 | `utils.config` | Load secrets from `.env` (local), Colab userdata, or Kaggle Secrets |
 | `utils.data` | Load & subsample GSM8K / MMLU datasets |
-| `utils.models` | Load HF models with NF4 quantisation for T4 GPUs |
-| `utils.evaluation` | Compute accuracy (numeric match / letter match) |
-| `utils.agents` | Wrap HF models as LangChain LLMs |
-| `utils.logging_utils` | Initialise & log to W&B runs |
+| `utils.models` | Load HF models with NF4 quantisation (bitsandbytes) |
+| `utils.evaluation` | Compute accuracy — numeric match (GSM8K) / letter match (MMLU) |
+| `utils.agents` | Wrap HF models as LangChain `HuggingFacePipeline` LLMs with optional seeded generation |
+| `utils.instrumentation` | Count input/output tokens; measure GPU peak VRAM and utilisation; compute throughput (tokens/s) |
+| `utils.warmup` | Run throwaway generations to trigger CUDA/cuBLAS kernel compilation before timed measurements |
+| `utils.statistics` | Cluster-corrected estimators: accuracy (Student-t CI), latency/tokens (BCa bootstrap), overhead ratios (log-space t), VRAM (Student-t); between-system Welch t-test and Mann-Whitney U |
+| `utils.logging_utils` | Initialise & log metrics to W&B runs |
 
 ---
 
