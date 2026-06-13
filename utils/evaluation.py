@@ -104,25 +104,43 @@ def gsm8k_accuracy(
     )
     return correct / len(predictions) if predictions else 0.0
 
+def _number_from_boxed_content(content: str) -> str | None:
+    """Return the numeric value from a \\boxed{...} content string, or None.
+
+    Handles pure numbers (``750``), currency-prefixed values (``\\$3220``),
+    and numbers with trailing unit words (``1 hour``, ``60 minutes``).
+    Returns None for algebraic expressions (``2A+S+\\$720``).
+    """
+    cleaned = content.replace("\\$", "").replace("$", "").replace(",", "").strip()
+    # Accept: optional leading sign, digits, optional decimal — then only letters/spaces
+    m = re.match(r"^(-?\d+\.?\d*)\s*([A-Za-z\s]*)$", cleaned)
+    if m and not re.search(r"\d", m.group(2)):
+        return m.group(1).rstrip(".")
+    return None
+
+
 def extract_gsm8k_prediction(agent_output: str) -> str | None:
     """Extract a numeric prediction from an agent's GSM8K output.
 
-    Tries to match the ``#### <number>`` pattern first; if not found,
-    falls back to the last number in the text (after stripping commas).
-    The returned value is canonicalized (trailing dots and redundant
-    zeros removed) so it can be compared directly with the ground
-    truth.
+    Search order:
+    1. Last ``\\boxed{...}`` whose content resolves to a number.
+       Handles currency prefixes (``\\$``) and unit suffixes (``hours``,
+       ``minutes``, etc.); skips algebraic expressions.
+    2. ``#### <number>`` marker (legacy GSM8K format).
+    3. Last number in the full text (fallback).
 
-    Returns ``None`` if no number is found.
+    The returned value is canonicalized so it can be compared directly
+    with the ground truth.  Returns ``None`` if no number is found.
     """
-    # Try \boxed{} first (EvalScope format)
-    boxed = re.search(r"\\boxed\{(-?\d+\.?\d*)\}", agent_output)
-    if boxed:
-        raw = boxed.group(1).rstrip(".")
-        try:
-            return _canonicalize_number(raw)
-        except (ValueError, OverflowError):
-            return raw
+    # Collect all \boxed{} contents and scan from the end so the last
+    # numeric answer wins over intermediate boxed intermediate values.
+    for content in reversed(re.findall(r"\\boxed\{([^}]*)\}", agent_output)):
+        raw = _number_from_boxed_content(content)
+        if raw is not None:
+            try:
+                return _canonicalize_number(raw)
+            except (ValueError, OverflowError):
+                return raw
 
     # Try the #### marker (legacy format)
     marker = re.search(r"####\s*(-?\d+\.?\d*)", agent_output)
