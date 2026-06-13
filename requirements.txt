@@ -11,8 +11,8 @@ langgraph>=0.2.0
 # ========================
 # LLM & Model loading
 # ========================
-transformers>=4.57.0         
-mistral-common>=1.8.6        
+transformers>=5.0.0
+mistral-common>=1.8.6
 torch>=2.0.0
 accelerate>=0.30.0
 bitsandbytes>=0.43.0

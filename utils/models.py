@@ -1,8 +1,8 @@
 """
 models.py — Model loading utilities.
 
-Provides helpers to load Hugging Face causal-LM models with optional
-4-bit quantisation via bitsandbytes (designed for Colab T4 GPUs).
+Helpers to load HF causal-LM and vision-language models with optional
+NF4 4-bit quantisation via bitsandbytes, targeting a single 16 GB T4 GPU.
 """
 
 from __future__ import annotations
@@ -29,18 +29,18 @@ def load_model_and_tokenizer(
     token: Optional[str] = None,
     trust_remote_code: bool = False,
 ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
-    """Load a causal-LM model and its tokenizer from Hugging Face.
+    """Load a causal-LM (or text-capable VL) model and its tokenizer from HuggingFace.
 
     Parameters
     ----------
     model_name : str
-        Hugging Face model identifier (e.g. ``"microsoft/Phi-3-mini-4k-instruct"``).
+        HuggingFace model identifier.
     quantize_4bit : bool
-        If ``True``, load with NF4 quantisation via bitsandbytes.
+        Load with NF4 4-bit quantisation via bitsandbytes (~5 GB for 8B models).
     device_map : str
-        Device placement strategy (default ``"auto"``).
+        Device placement strategy passed to ``from_pretrained``.
     token : str | None
-        HF token. If ``None``, falls back to ``HF_TOKEN`` env var.
+        HF access token; falls back to the ``HF_TOKEN`` env var.
     trust_remote_code : bool
         Whether to trust remote code in the model repo.
 
@@ -52,6 +52,26 @@ def load_model_and_tokenizer(
 
     quant_config = None
     if quantize_4bit:
+        from transformers.utils import is_bitsandbytes_available  # type: ignore
+
+        # is_bitsandbytes_available is lru_cached. On Kaggle it is often called
+        # at kernel startup (before CUDA is live), which freezes False for the
+        # session. If that happens, transformers silently skips quantisation and
+        # loads full BF16 (~16 GB) — OOMing the T4. Clearing the cache forces a
+        # fresh evaluation here and inside the subsequent from_pretrained call.
+        try:
+            is_bitsandbytes_available.cache_clear()  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+
+        if not is_bitsandbytes_available():
+            raise RuntimeError(
+                "quantize_4bit=True but bitsandbytes is not available — "
+                "transformers would silently fall back to full BF16 and OOM the T4. "
+                "Run `pip install -U bitsandbytes` and restart the kernel, or pass "
+                "quantize_4bit=False to load in full precision intentionally."
+            )
+
         quant_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -66,24 +86,13 @@ def load_model_and_tokenizer(
         trust_remote_code=trust_remote_code,
     )
 
-    # Pick the right auto class from the config. Most project models
-    # (Phi-4, Qwen3, plain Mistral, Gemma-4 text) are plain causal LMs, but a
-    # few targets ship as vision/multimodal architectures registered only under
-    # AutoModelForImageTextToText — e.g. Ministral-3 (``Mistral3Config``) and
-    # the Gemma-4 E2B/E4B checkpoints (Gemma-3n-style conditional-generation
-    # configs). Forcing those through the causal-LM loader raises an
-    # "Unrecognized configuration class ... for AutoModelForCausalLM" error, so
-    # dispatch on the config class instead. The resulting VL model still
-    # generates text-only and is accepted by the downstream ``text-generation``
-    # pipeline (a benign warning aside): ``model.can_generate()`` is True and
-    # text-only input needs no pixels.
+    # Some models (Ministral-3, Gemma-4 E2B/E4B) ship as multimodal archs
+    # registered only under AutoModelForImageTextToText, not AutoModelForCausalLM.
+    # We pick the right class from the config, then fall back to the other if needed.
+    # The fallback is cheap: the arch-mismatch check raises before any weights load.
     config = AutoConfig.from_pretrained(
         model_name, token=token, trust_remote_code=trust_remote_code
     )
-    # Try the most likely class first, then fall back to the other, so a new
-    # model family loads regardless of which auto class it happens to register
-    # under. The config-class check raises *before* any weights are read, so
-    # the fallback attempt is cheap.
     if type(config) in AutoModelForCausalLM._model_mapping:
         auto_classes = (AutoModelForCausalLM, AutoModelForImageTextToText)
     else:
@@ -96,20 +105,29 @@ def load_model_and_tokenizer(
             model = auto_cls.from_pretrained(model_name, **load_kwargs)
             break
         except ValueError as exc:
-            # Only retry the other class on the arch-mismatch error; re-raise
-            # anything else (e.g. a genuine quantisation/config failure).
             if "Unrecognized configuration class" not in str(exc):
                 raise
             last_error = exc
     if model is None:
         raise last_error  # type: ignore[misc]
 
+    # Verify NF4 actually engaged by scanning for bitsandbytes' own Linear4bit
+    # layers (more reliable than transformers-internal flags across major versions).
+    if quantize_4bit:
+        from bitsandbytes.nn import Linear4bit  # type: ignore
+
+        if not any(isinstance(m, Linear4bit) for m in model.modules()):
+            raise RuntimeError(
+                f"Model loaded in full precision (dtype={model.dtype}) despite "
+                "quantize_4bit=True — no Linear4bit layers found. "
+                "This will OOM the T4. Check bitsandbytes install / restart kernel."
+            )
+
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
         token=token,
         trust_remote_code=trust_remote_code,
     )
-    # Ensure pad token is set (common issue with decoder-only models)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
