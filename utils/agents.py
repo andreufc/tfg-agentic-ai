@@ -11,6 +11,7 @@ import random
 from typing import Any, Optional
 
 import torch
+from langchain_core.runnables import Runnable, RunnableLambda  # type: ignore
 from langchain_huggingface import HuggingFacePipeline  # type: ignore
 from transformers import pipeline as hf_pipeline  # type: ignore
 
@@ -48,8 +49,9 @@ def build_hf_langchain_llm(
     return_full_text: bool = False,
     seed: Optional[int] = None,
     batch_size: int = 1,
+    chat_template: bool = True,
     **kwargs: Any,
-) -> HuggingFacePipeline:
+) -> Runnable:
     """Wrap a loaded HF model as a LangChain-compatible LLM.
 
     Parameters
@@ -81,11 +83,18 @@ def build_hf_langchain_llm(
         problems and both MAS and baseline are measured under identical
         hardware load. Only raise this for a dedicated sustained-
         throughput ceiling experiment, never for the main comparison.
+    chat_template : bool
+        If ``True`` (default), each prompt is wrapped in the model's instruct
+        chat template before generation. Instruct models expect this; without
+        it, weaker models (e.g. Ministral-3-3B) frequently emit an immediate
+        EOS and return empty outputs. Models whose tokenizer has no chat
+        template fall back transparently to the raw prompt.
 
     Returns
     -------
-    HuggingFacePipeline
-        A LangChain LLM wrapping the HF pipeline.
+    Runnable
+        A LangChain Runnable: the HF pipeline, optionally preceded by a
+        chat-template formatting step.
     """
     if seed is not None:
         _seed_all(seed)
@@ -103,4 +112,25 @@ def build_hf_langchain_llm(
         batch_size=batch_size,
         **kwargs,
     )
-    return HuggingFacePipeline(pipeline=pipe)
+    llm: Runnable = HuggingFacePipeline(pipeline=pipe)
+
+    if not chat_template:
+        return llm
+
+    # Render the chat template to a *string* and feed it through the pipeline.
+    # We deliberately do NOT pass chat messages to the pipeline: its chat
+    # post-processing mis-decodes the mistral-common tokenizer (emitting raw
+    # byte tokens like `Ġ`/`Ċ`), whereas the string path decodes cleanly via
+    # tokenizer.decode(). Tokenizers without a chat template (base models)
+    # fall back to the raw prompt.
+    def _apply_chat_template(text: str) -> str:
+        try:
+            return tokenizer.apply_chat_template(
+                [{"role": "user", "content": text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            return text
+
+    return RunnableLambda(_apply_chat_template) | llm
