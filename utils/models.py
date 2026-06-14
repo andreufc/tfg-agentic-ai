@@ -1,8 +1,13 @@
 """
 models.py — Model loading utilities.
 
-Helpers to load HF causal-LM and vision-language models with optional
+Helpers to load HF causal-LM (and text-capable multimodal) models with optional
 NF4 4-bit quantisation via bitsandbytes, targeting a single 16 GB T4 GPU.
+
+Loading is dispatched per model family (see ``load_model_and_tokenizer``):
+Ministral-3 ships as a multimodal ``Mistral3`` checkpoint and needs a bespoke
+loader; every other in-scope family (Phi-4, Qwen3, Gemma-4 text) is a plain
+causal LM. New families get their own branch as the need arises.
 """
 
 from __future__ import annotations
@@ -12,7 +17,6 @@ from typing import Optional
 
 import torch
 from transformers import (  # type: ignore
-    AutoConfig,
     AutoModelForCausalLM,
     AutoModelForImageTextToText,
     AutoTokenizer,
@@ -22,6 +26,27 @@ from transformers import (  # type: ignore
 )
 
 
+def _strip_vision_modules(model: PreTrainedModel) -> None:
+    """Drop the vision tower + multimodal projector of a Ministral-3 model.
+
+    Ministral-3 ships as a multimodal ``Mistral3`` checkpoint, but the project
+    uses it for text only. ``Mistral3Model.forward`` gates every vision op
+    behind ``pixel_values is not None`` (verified on transformers 5.x), so for
+    text generation the vision tower and projector are never invoked — freeing
+    them reclaims their VRAM and leaves just the language model + ``lm_head``.
+    """
+    inner = getattr(model, "model", None)
+    if inner is None:
+        return
+    freed = False
+    for attr in ("vision_tower", "multi_modal_projector"):
+        if getattr(inner, attr, None) is not None:
+            setattr(inner, attr, None)
+            freed = True
+    if freed and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def load_model_and_tokenizer(
     model_name: str,
     quantize_4bit: bool = True,
@@ -29,7 +54,7 @@ def load_model_and_tokenizer(
     token: Optional[str] = None,
     trust_remote_code: bool = False,
 ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
-    """Load a causal-LM (or text-capable VL) model and its tokenizer from HuggingFace.
+    """Load a model and its tokenizer from HuggingFace, dispatched by family.
 
     Parameters
     ----------
@@ -72,6 +97,13 @@ def load_model_and_tokenizer(
                 "quantize_4bit=False to load in full precision intentionally."
             )
 
+        # Force synchronous weight loading. transformers >= 5.8 auto-disables its
+        # async loader during on-the-fly quantisation, but earlier 5.x (e.g. the
+        # 5.0.0 on Kaggle's image) race full-precision shards onto the GPU faster
+        # than NF4 can shrink them, spiking VRAM to the full BF16 size and OOMing
+        # the T4. This env var (honoured at load time) keeps loading sequential.
+        os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
+
         quant_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
@@ -86,30 +118,16 @@ def load_model_and_tokenizer(
         trust_remote_code=trust_remote_code,
     )
 
-    # Some models (Ministral-3, Gemma-4 E2B/E4B) ship as multimodal archs
-    # registered only under AutoModelForImageTextToText, not AutoModelForCausalLM.
-    # We pick the right class from the config, then fall back to the other if needed.
-    # The fallback is cheap: the arch-mismatch check raises before any weights load.
-    config = AutoConfig.from_pretrained(
-        model_name, token=token, trust_remote_code=trust_remote_code
-    )
-    if type(config) in AutoModelForCausalLM._model_mapping:
-        auto_classes = (AutoModelForCausalLM, AutoModelForImageTextToText)
+    # Dispatch by model family. Add an `elif` here when another in-scope family
+    # needs a bespoke loader (e.g. the multimodal Gemma-4 E2B/E4B checkpoints).
+    if "ministral" in model_name.lower():
+        # Multimodal Mistral3 checkpoint: only loads via the image-text class.
+        # Keep the language model, discard the vision tower (text-only use).
+        model = AutoModelForImageTextToText.from_pretrained(model_name, **load_kwargs)
+        _strip_vision_modules(model)
     else:
-        auto_classes = (AutoModelForImageTextToText, AutoModelForCausalLM)
-
-    model = None
-    last_error: Exception | None = None
-    for auto_cls in auto_classes:
-        try:
-            model = auto_cls.from_pretrained(model_name, **load_kwargs)
-            break
-        except ValueError as exc:
-            if "Unrecognized configuration class" not in str(exc):
-                raise
-            last_error = exc
-    if model is None:
-        raise last_error  # type: ignore[misc]
+        # Plain causal LM (Phi-4, Qwen3, Gemma-4 text, ...).
+        model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
 
     # Verify NF4 actually engaged by scanning for bitsandbytes' own Linear4bit
     # layers (more reliable than transformers-internal flags across major versions).
