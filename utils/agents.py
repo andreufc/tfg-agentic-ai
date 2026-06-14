@@ -84,85 +84,62 @@ def build_hf_langchain_llm(
         hardware load. Only raise this for a dedicated sustained-
         throughput ceiling experiment, never for the main comparison.
     chat_template : bool
-        If ``True`` (default), each prompt is encoded with the model's instruct
-        chat template (``tokenize=True``) and run through ``model.generate``
-        directly — the HF text-generation pipeline is bypassed. Instruct models
-        expect this; without it, weaker models (e.g. Ministral-3-3B) frequently
-        emit an immediate EOS and return empty outputs. Tokenizers without a
-        chat template fall back transparently to raw tokenisation.
+        If ``True`` (default), the rendered prompt is wrapped as a single user
+        message and the HF pipeline applies the model's instruct chat template
+        internally (``apply_chat_template(tokenize=True)``) before generating.
+        Instruct models expect this; without it, weaker models (e.g.
+        Ministral-3-3B) frequently emit an immediate EOS and return empty
+        outputs. Requires the tokenizer to expose a chat template — base models
+        without one must use ``chat_template=False``.
 
     Returns
     -------
     Runnable
         A LangChain Runnable. With ``chat_template=True`` this is a
-        ``RunnableLambda`` that tokenises with the instruct template, calls
-        ``model.generate``, and decodes manually. With ``chat_template=False``
-        it is a ``HuggingFacePipeline`` fed the raw prompt.
+        ``RunnableLambda`` that feeds the prompt to the pipeline as a chat
+        message (template applied internally). With ``chat_template=False`` it
+        is a ``HuggingFacePipeline`` fed the raw prompt.
     """
     if seed is not None:
         _seed_all(seed)
 
+    pipe = hf_pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        return_full_text=return_full_text,
+        do_sample=temperature > 0,
+        batch_size=batch_size,
+        **kwargs,
+    )
+
     if not chat_template:
-        pipe = hf_pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            return_full_text=return_full_text,
-            do_sample=temperature > 0,
-            batch_size=batch_size,
-            **kwargs,
-        )
+        # Base/non-instruct path: feed the raw rendered prompt straight to the
+        # pipeline (no chat template applied).
         return HuggingFacePipeline(pipeline=pipe)
 
-    # Instruct path: tokenise WITH the chat template (tokenize=True) and call
-    # model.generate directly, then decode manually. We deliberately avoid the
-    # HF pipeline and any string round-trip: the mistral-common control tokens
-    # do NOT survive apply_chat_template(tokenize=False) -> re-tokenise, so the
-    # 3B never sees the instruct format and emits an immediate EOS (empty
-    # output on ~50% of samples). tokenize=True keeps the control tokens; the
-    # manual tokenizer.decode() also avoids the pipeline's byte-token
-    # mis-decode of the mistral-common tokenizer.
-    gen_kwargs: dict[str, Any] = {
-        "max_new_tokens": max_new_tokens,
-        "do_sample": temperature > 0,
-    }
-    if temperature > 0:
-        gen_kwargs.update(temperature=temperature, top_p=top_p, top_k=top_k)
-    gen_kwargs.update(kwargs)
-    if getattr(tokenizer, "pad_token_id", None) is not None:
-        gen_kwargs.setdefault("pad_token_id", tokenizer.pad_token_id)
-
+    # Instruct path: wrap the rendered prompt as a single user message. Given a
+    # message list, the pipeline runs the exact encode->generate->decode the old
+    # manual block did by hand — internally calling
+    # apply_chat_template(tokenize=True, return_dict=True) (so the instruct
+    # control tokens reach the model, no string round-trip) then decoding with
+    # the tokenizer. Correct decoding depends on that tokenizer being the
+    # mistral-common backend (see load_model_and_tokenizer); a plain
+    # LlamaTokenizer garbles spaces / emits byte markers. The thin
+    # RunnableLambda remains only because the upstream PromptTemplate hands us a
+    # string, which must be wrapped into a messages list for chat handling.
     def _generate(prompt: Any) -> str:
         # The upstream PromptTemplate yields a StringPromptValue, not a str.
         text = prompt.to_string() if hasattr(prompt, "to_string") else str(prompt)
-
-        # Encode with the instruct template; fall back to raw tokenisation for
-        # tokenizers (e.g. base models) that have no chat template.
-        try:
-            enc = tokenizer.apply_chat_template(
-                [{"role": "user", "content": text}],
-                add_generation_prompt=True,
-                tokenize=True,
-                return_tensors="pt",
-                return_dict=True,
-            )
-        except Exception:
-            enc = tokenizer(text, return_tensors="pt")
-
-        # Pass input_ids/attention_mask as kwargs — a bare positional tensor
-        # mis-routes through the multimodal model's VLM input path.
-        enc = {k: v.to(model.device) for k, v in enc.items()}
-        input_len = enc["input_ids"].shape[1]
-
-        with torch.inference_mode():
-            generated = model.generate(**enc, **gen_kwargs)
-
-        new_tokens = generated[0][input_len:]
-        completion = tokenizer.decode(new_tokens, skip_special_tokens=True)
-        return text + completion if return_full_text else completion
+        generated_text = pipe([{"role": "user", "content": text}])[0]["generated_text"]
+        # return_full_text=True on a chat yields the full message list rather
+        # than a string — normalise to the assistant turn's text.
+        if isinstance(generated_text, list):
+            return generated_text[-1]["content"]
+        return generated_text
 
     return RunnableLambda(_generate)

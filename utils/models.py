@@ -141,11 +141,19 @@ def load_model_and_tokenizer(
                 "This will OOM the T4. Check bitsandbytes install / restart kernel."
             )
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        token=token,
-        trust_remote_code=trust_remote_code,
-    )
+    # Tokenizer dispatch — mirrors the model dispatch above. For Ministral-3,
+    # plain AutoTokenizer converts the repo's tokenizer to a *LlamaTokenizer*
+    # whose byte-level decoder is broken for this checkpoint: it silently
+    # strips every space (default) or emits raw byte markers (Ġ=space,
+    # Ċ=newline) with fix_mistral_regex=True — either way garbling all decoded
+    # text while token *ids* stay correct. `tokenizer_type="mistral"` loads
+    # Mistral's native mistral-common backend (MistralCommonBackend) instead,
+    # which round-trips encode/decode correctly. Requires `mistral-common`.
+    tokenizer_kwargs: dict = dict(token=token, trust_remote_code=trust_remote_code)
+    if "ministral" in model_name.lower():
+        tokenizer_kwargs["tokenizer_type"] = "mistral"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, **tokenizer_kwargs)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
