@@ -5,9 +5,10 @@ Helpers to load HF causal-LM (and text-capable multimodal) models with optional
 NF4 4-bit quantisation via bitsandbytes, targeting a single 16 GB T4 GPU.
 
 Loading is dispatched per model family (see ``load_model_and_tokenizer``):
-Ministral-3 ships as a multimodal ``Mistral3`` checkpoint and needs a bespoke
-loader; every other in-scope family (Phi-4, Qwen3, Gemma-4 text) is a plain
-causal LM. New families get their own branch as the need arises.
+Ministral-3 and Gemma-4 (E2B/E4B) ship as multimodal checkpoints and need a
+bespoke loader (load via the image-text class, then drop the vision/audio
+encoders for text-only use); every other in-scope family (Phi-4, Qwen3) is a
+plain causal LM. New families get their own branch as the need arises.
 """
 
 from __future__ import annotations
@@ -27,19 +28,29 @@ from transformers import (  # type: ignore
 
 
 def _strip_vision_modules(model: PreTrainedModel) -> None:
-    """Drop the vision tower + multimodal projector of a Ministral-3 model.
+    """Drop the vision/audio encoders of a multimodal text-capable checkpoint.
 
-    Ministral-3 ships as a multimodal ``Mistral3`` checkpoint, but the project
-    uses it for text only. ``Mistral3Model.forward`` gates every vision op
-    behind ``pixel_values is not None`` (verified on transformers 5.x), so for
-    text generation the vision tower and projector are never invoked — freeing
-    them reclaims their VRAM and leaves just the language model + ``lm_head``.
+    Both Ministral-3 (``Mistral3``) and Gemma-4 E2B/E4B ship as multimodal
+    checkpoints, but the project uses them for text only.
+
+    Only modules actually present on the checkpoint are dropped; absent ones are
+    skipped, so this is safe to call on any of the multimodal families (e.g.
+    Ministral-3 has no ``audio_tower``).
     """
     inner = getattr(model, "model", None)
     if inner is None:
         return
     freed = False
-    for attr in ("vision_tower", "multi_modal_projector"):
+    for attr in (
+        # Mistral 3 projector name
+        "multi_modal_projector",
+        # Common to both Mistral 3 and Gemma 4
+        "vision_tower",
+        "audio_tower",
+        # Gemma 4 multimodal embedding projectors (replace multi_modal_projector)
+        "embed_vision",
+        "embed_audio",
+    ):
         if getattr(inner, attr, None) is not None:
             setattr(inner, attr, None)
             freed = True
@@ -97,11 +108,7 @@ def load_model_and_tokenizer(
                 "quantize_4bit=False to load in full precision intentionally."
             )
 
-        # Force synchronous weight loading. transformers >= 5.8 auto-disables its
-        # async loader during on-the-fly quantisation, but earlier 5.x (e.g. the
-        # 5.0.0 on Kaggle's image) race full-precision shards onto the GPU faster
-        # than NF4 can shrink them, spiking VRAM to the full BF16 size and OOMing
-        # the T4. This env var (honoured at load time) keeps loading sequential.
+        # Force synchronous weight loading. 
         os.environ.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
 
         quant_config = BitsAndBytesConfig(
@@ -118,15 +125,15 @@ def load_model_and_tokenizer(
         trust_remote_code=trust_remote_code,
     )
 
-    # Dispatch by model family. Add an `elif` here when another in-scope family
-    # needs a bespoke loader (e.g. the multimodal Gemma-4 E2B/E4B checkpoints).
-    if "ministral" in model_name.lower():
-        # Multimodal Mistral3 checkpoint: only loads via the image-text class.
-        # Keep the language model, discard the vision tower (text-only use).
+    name_lower = model_name.lower()
+    if "ministral" in name_lower:
+        model = AutoModelForImageTextToText.from_pretrained(model_name, **load_kwargs)
+        _strip_vision_modules(model)
+    elif "gemma-4" in name_lower or "gemma4" in name_lower:
         model = AutoModelForImageTextToText.from_pretrained(model_name, **load_kwargs)
         _strip_vision_modules(model)
     else:
-        # Plain causal LM (Phi-4, Qwen3, Gemma-4 text, ...).
+        # Plain causal LM (Phi-4, Qwen3, ...).
         model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
 
     # Verify NF4 actually engaged by scanning for bitsandbytes' own Linear4bit
@@ -141,17 +148,11 @@ def load_model_and_tokenizer(
                 "This will OOM the T4. Check bitsandbytes install / restart kernel."
             )
 
-    # Tokenizer dispatch — mirrors the model dispatch above. For Ministral-3,
-    # plain AutoTokenizer converts the repo's tokenizer to a *LlamaTokenizer*
-    # whose byte-level decoder is broken for this checkpoint: it silently
-    # strips every space (default) or emits raw byte markers (Ġ=space,
-    # Ċ=newline) with fix_mistral_regex=True — either way garbling all decoded
-    # text while token *ids* stay correct. `tokenizer_type="mistral"` loads
-    # Mistral's native mistral-common backend (MistralCommonBackend) instead,
-    # which round-trips encode/decode correctly. Requires `mistral-common`.
     tokenizer_kwargs: dict = dict(token=token, trust_remote_code=trust_remote_code)
     if "ministral" in model_name.lower():
         tokenizer_kwargs["tokenizer_type"] = "mistral"
+    elif "gemma-4" in model_name.lower() or "gemma4" in model_name.lower():
+        tokenizer_kwargs["padding_side"] = "left"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, **tokenizer_kwargs)
     if tokenizer.pad_token is None:
