@@ -48,7 +48,7 @@ def warmup_model(
     tokenizer : PreTrainedTokenizer
         The associated tokenizer.
     max_new_tokens : int
-        Tokens to generate per warmup iteration (default ``64`` — enough to
+        Tokens to generate per warmup iteration (default ``128`` — enough to
         exercise the decode loop without wasting time).
     n_iterations : int
         Number of throwaway generations (default ``2``).

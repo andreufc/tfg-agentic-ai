@@ -9,23 +9,18 @@ Provides:
                                         correlation via the Design Effect (DEFF)
     - accuracy_statistics:              Cluster-t CI for accuracy on per-problem
                                         means; Wilson kept as supplementary
-    - time_statistics:                  BCa bootstrap CI on per-problem means
-                                        (cluster-corrected); flattened descriptive
-                                        statistics preserved
-    - metric_statistics:                Nonparametric summary for any (N, m)
-                                        resource metric; CI on per-problem means
-    - token_statistics:                 Thin wrapper over metric_statistics for
-                                        token counts (output or total)
-    - throughput_statistics:            Tailored estimator for tokens/s with
-                                        mean-of-ratios as canonical value
+    - time_statistics / token_statistics:
+                                        Nonparametric summary for any (N, m)
+                                        time or token-count matrix, built on the
+                                        shared ``_metric_statistics`` helper;
+                                        CI on per-problem means (BCa bootstrap)
     - overhead_ratio_statistics:        Geometric-mean CI via log-space Student-t
                                         for multiplicative overhead (latency, tokens)
     - overhead_difference_statistics:   Cluster-t CI for additive overhead (VRAM)
     - vram_statistics:                  Cluster-t CI on per-problem peak-VRAM means
 
     Between-system comparison tests (deferred — not part of per-system scope):
-    - welch_t_test_metric / welch_t_test_times:
-                                        Welch t-test on per-problem means
+    - welch_t_test_metric:              Welch t-test on per-problem means
     - mann_whitney_u_test_metric:       Rank-based distribution-free comparison
 
 All functions expect data as NumPy arrays of shape ``(N, m)`` where
@@ -36,6 +31,13 @@ Unit of analysis
 Every CI and inferential variance is computed on the ``N`` per-problem means,
 never on the flattened ``N×m`` array. The flattened statistics (mean, std,
 percentiles, skewness, …) are retained as *descriptive* diagnostics only.
+
+Note
+----
+``print_throughput_report`` is implemented for a forthcoming
+``throughput_statistics`` estimator (tokens/s with mean-of-ratios as the
+canonical value); until that estimator lands, callers must assemble its
+input dict by hand — see the function's docstring for the expected shape.
 
 References
 ----------
@@ -53,9 +55,9 @@ from numpy.typing import ArrayLike
 from scipy import stats as sp_stats
 
 
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Private helpers
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def _per_problem_means(arr: np.ndarray) -> np.ndarray:
     """Validate (N, m) shape and return the N per-problem means."""
@@ -78,10 +80,10 @@ def _cluster_t_ci(
     Optionally clips both endpoints into ``clip = (lo, hi)``.
     """
     v = np.asarray(values, dtype=float)
-    
+
     if v.ndim != 1:
         raise ValueError(f"Expected 1-D array of per-problem values, got shape {v.shape}")
-    
+
     n = len(v)
     mean = float(np.mean(v))
 
@@ -133,7 +135,7 @@ def _cluster_bca_ci(
     if clip is not None:
         lo = float(np.clip(lo, clip[0], clip[1]))
         hi = float(np.clip(hi, clip[0], clip[1]))
-    
+
     return (float(lo), float(hi))
 
 
@@ -150,9 +152,9 @@ def _log_ratio_t_ci(
     return float(np.exp(lo_log)), float(np.exp(hi_log))
 
 
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Accuracy estimation
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def pooled_accuracy(correctness: ArrayLike) -> float:
     """Unbiased point estimate of accuracy from clustered binary data.
@@ -160,8 +162,8 @@ def pooled_accuracy(correctness: ArrayLike) -> float:
     Parameters
     ----------
     correctness : array-like of shape (N, m)
-        Binary correctness matrix.  
-    
+        Binary correctness matrix.
+
     Returns
     -------
     float
@@ -191,7 +193,8 @@ def wilson_ci_clustered(
     Returns
     -------
     dict
-        Keys: p_hat, ci_lower, ci_upper, deff, n_eff, icc, se.
+        Keys: p_hat, ci_lower, ci_upper, deff, n_eff, icc, se,
+        n_problems, n_seeds, n_total.
     """
     arr = np.asarray(correctness, dtype=float)
     if arr.ndim != 2:
@@ -202,7 +205,7 @@ def wilson_ci_clustered(
     n_total = n_problems * n_seeds
 
     p_hat = pooled_accuracy(arr)
-    x_bar_i = _per_problem_means(arr) 
+    x_bar_i = _per_problem_means(arr)
     sigma2_c = float(np.var(x_bar_i, ddof=1))
 
     if p_hat == 0.0 or p_hat == 1.0:
@@ -259,8 +262,8 @@ def accuracy_statistics(
     The primary CI is a Student-t interval on the N per-problem
     accuracy means, clipped to [0, 1]. This correctly treats the
     problem as the unit of analysis.  The DEFF-adjusted Wilson CI from
-    :func:wilson_ci_clustered is returned under the "wilson" key
-    for comparison.
+    :func:`wilson_ci_clustered` is flattened in under the ``wilson_*``
+    keys for comparison.
 
     Parameters
     ----------
@@ -272,8 +275,10 @@ def accuracy_statistics(
     Returns
     -------
     dict
-        Keys: p_hat, ci_lower, ci_upper, between_problem_std,
-        n_problems, n_seeds, n_total, per_problem_means, wilson.
+        Keys: p_hat, ci_lower, ci_upper, ci_method, alpha,
+        between_problem_std, n_problems, n_seeds, n_total,
+        wilson_ci_lower, wilson_ci_upper, wilson_deff, wilson_n_eff,
+        wilson_icc, wilson_se.
     """
     arr = np.asarray(correctness, dtype=float)
     if arr.ndim != 2:
@@ -308,10 +313,9 @@ def accuracy_statistics(
     }
 
 
-
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Latency and token counts estimation (nonparametric and right-skewed)
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def _metric_statistics(
     values: ArrayLike,
@@ -341,10 +345,11 @@ def _metric_statistics(
     Returns
     -------
     dict
-        Common keys: mean, percentiles, flat_std, flat_cv, 
-            between_problem_std, ci_lower, ci_upper, ci_method, 
+        Common keys: mean, percentiles, flat_std, flat_cv,
+            between_problem_std, ci_lower, ci_upper, ci_method,
             alpha, n_problems, n_seeds, n_total, kind.
-        Additional kind-specific keys as documented in the spec.
+        Additional keys: dispersion_index when kind="count"; frac_at_ci_lower /
+            frac_at_ci_upper when bounds is given and some values sit at it.
     """
     arr = np.asarray(values, dtype=float)
     if arr.ndim != 2:
@@ -360,7 +365,6 @@ def _metric_statistics(
     variance = float(np.var(flat, ddof=1))
     std = float(np.std(flat, ddof=1))
     cv = std / mean if mean != 0.0 else float("nan")
-
 
     p25, p50, p75, p95 = np.percentile(flat, [25, 50, 75, 95])
     percentiles = {
@@ -429,11 +433,11 @@ def time_statistics(
     Returns
     -------
     dict
-        Keys: mean, percentiles, flat_std, flat_cv, 
-            between_problem_std, ci_lower, ci_upper, ci_method, 
+        Keys: mean, percentiles, flat_std, flat_cv,
+            between_problem_std, ci_lower, ci_upper, ci_method,
             alpha, n_problems, n_seeds, n_total, kind="continuous".
     """
-    
+
     return _metric_statistics(
         times,
         kind="continuous",
@@ -450,7 +454,7 @@ def token_statistics(
 ) -> dict:
     """Nonparametric summary for an (N, m) token-count matrix.
 
-    Thin wrapper over :func:`metric_statistics` with ``kind="count"``,
+    Thin wrapper over :func:`_metric_statistics` with ``kind="count"``,
     ensuring the CI is computed on per-problem means.  Call twice —
     once for ``output_tokens`` and once for ``total_tokens``.
 
@@ -466,8 +470,8 @@ def token_statistics(
     Returns
     -------
     dict
-        Keys: mean, percentiles, flat_std, flat_cv, 
-            between_problem_std, ci_lower, ci_upper, ci_method, 
+        Keys: mean, percentiles, flat_std, flat_cv,
+            between_problem_std, ci_lower, ci_upper, ci_method,
             alpha, n_problems, n_seeds, n_total, kind="count".
         Optional keys if max_tokens is finite and some values are at the bound.
     """
@@ -504,9 +508,9 @@ def vram_statistics(
     Returns
     -------
     dict
-        Keys: mean_peak, ci_lower, ci_upper, ci_method, peak_max,
-        median, percentiles, between_problem_std, n_problems, n_seeds,
-        n_total, per_problem_means.  Optional: mean_avg.
+        Keys: mean_peak, peak_ci_lower, peak_ci_upper, ci_method, alpha,
+        peak_max, peak_percentiles, between_problem_peak_std, n_problems,
+        n_seeds, n_total.  Optional: mean_avg (when avg_matrix is given).
     """
     arr = np.asarray(peak_matrix, dtype=float)
     if arr.ndim != 2:
@@ -550,9 +554,9 @@ def vram_statistics(
     return result
 
 
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Ratios statistics: overhead ratios (latency, tokens) and throughput (tokens/s)
-# ──────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def overhead_ratio_statistics(
     values_mas: ArrayLike,
@@ -585,9 +589,9 @@ def overhead_ratio_statistics(
     Returns
     -------
     dict
-        Keys: geometric_mean, arithmetic_mean, ci_lower, ci_upper,
-        ci_method, between_problem_std, n_problems,
-        n_seeds.  Optional: bca_ci.
+        Keys: geometric_mean, arithmetic_mean, between_problem_std,
+        ci_lower, ci_upper, ci_method, alpha, n_problems, n_seeds,
+        n_total, per_problem_ratios.  Optional: bca_ci (when bca_check=True).
     """
     mas = np.asarray(values_mas, dtype=float)
     base = np.asarray(values_base, dtype=float)
@@ -689,10 +693,9 @@ def overhead_difference_statistics(
     }
 
 
-
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Between-system comparison tests  (deferred — not per-system scope)
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def welch_t_test_metric(
     per_problem_means_a: ArrayLike,
@@ -701,15 +704,15 @@ def welch_t_test_metric(
     """Welch t-test comparing per-problem means between two systems.
 
     .. note::
-        **Deferred scope.** This is a *between-system* comparison test and
-        is not part of the per-system estimation scope.  It is kept
-        unchanged for backwards compatibility.
+        Between-system scope: compares two already-computed per-problem mean
+        vectors (e.g. MAS vs. baseline), unlike the per-system estimators
+        above which take a raw (N, m) matrix.
 
     Parameters
     ----------
     per_problem_means_a : array-like, 1-D
-        Per-problem means for system A
-        (``time_statistics(...)['per_problem_means']``).
+        Per-problem means for system A, shape (N,) — e.g. the output of
+        ``_per_problem_means`` on a raw (N, m) metric matrix.
     per_problem_means_b : array-like, 1-D
         Per-problem means for system B.
 
@@ -802,9 +805,9 @@ def mann_whitney_u_test_metric(
     }
 
 
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Pretty-printing helpers
-# ───────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def print_accuracy_report(
     label: str,
@@ -947,7 +950,14 @@ def print_throughput_report(
     label: str,
     result: dict,
 ) -> None:
-    """Print a formatted throughput report from :func:`throughput_statistics`."""
+    """Print a formatted throughput (tok/s) report.
+
+    Expects ``result`` with keys: mean, std, cv, ci_lower, ci_upper, ci_method,
+    alpha, aggregate, aggregate_ci, percentiles, n_problems, n_seeds, n_total,
+    n_bootstrap — the mean-of-ratios canonical estimate plus the ratio-of-means
+    aggregate as a supplementary cross-check (see module docstring note on the
+    forthcoming ``throughput_statistics`` estimator).
+    """
     ci_pct = int(round((1.0 - result["alpha"]) * 100))
     agg_lo, agg_hi = result["aggregate_ci"]
     print(f"\n{'=' * 55}")

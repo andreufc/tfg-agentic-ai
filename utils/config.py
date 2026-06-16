@@ -11,11 +11,13 @@ import os
 def load_env(environment: str = "local") -> None:
     """Load environment variables from the appropriate secrets backend.
 
-    Args:
-        environment: One of ``"colab"``, ``"kaggle"``, or ``"local"``
-                     (the default).
+    Parameters
+    ----------
+    environment : str
+        One of ``"colab"``, ``"kaggle"``, or ``"local"`` (the default).
 
-    Backends:
+    Backends
+    --------
     - **colab**: reads secrets via ``google.colab.userdata``.
     - **kaggle**: reads secrets via ``kaggle_secrets.UserSecretsClient``.
     - **local** (default): reads a ``.env`` file using ``python-dotenv``.
