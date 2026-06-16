@@ -42,6 +42,7 @@ def build_hf_langchain_llm(
     seed: Optional[int] = None,
     batch_size: int = 1,
     chat_template: bool = True,
+    system_prompt: Optional[str] = None,
     **kwargs: Any,
 ) -> Runnable:
     """Wrap a loaded HF model as a LangChain-compatible LLM.
@@ -82,6 +83,11 @@ def build_hf_langchain_llm(
         Ministral-3-3B) frequently emit an immediate EOS and return empty
         outputs. Requires the tokenizer to expose a chat template — base models
         without one must use ``chat_template=False``.
+    system_prompt : str | None
+        If given (chat path only), prepended as a ``system`` message before the
+        user turn. Used for reasoning models that ship a recommended system
+        prompt (e.g. Ministral-3 Reasoning's ``SYSTEM_PROMPT.txt``, which sets up
+        the ``[THINK]`` protocol). Ignored when ``chat_template=False``.
 
     Returns
     -------
@@ -113,16 +119,22 @@ def build_hf_langchain_llm(
         # pipeline (no chat template applied).
         return HuggingFacePipeline(pipeline=pipe)
 
-    # Instruct path: pass a one-message chat list so the pipeline applies the
-    # chat template internally (apply_chat_template(tokenize=True,
-    # return_dict=True)), getting the instruct control tokens to the model
-    # without a string round-trip. Correct decoding requires the tokenizer to
-    # be the mistral-common backend (see load_model_and_tokenizer) — a plain
-    # LlamaTokenizer garbles spaces / emits byte markers.
+    # Instruct path: pass a chat list so the pipeline applies the chat template
+    # internally (apply_chat_template(tokenize=True, return_dict=True)), getting
+    # the instruct control tokens to the model without a string round-trip. An
+    # optional system message precedes the user turn (reasoning models' recommended
+    # prompt). Correct decoding requires the tokenizer to be the mistral-common
+    # backend (see load_model_and_tokenizer) — a plain LlamaTokenizer garbles
+    # spaces / emits byte markers.
+    base_messages = (
+        [{"role": "system", "content": system_prompt}] if system_prompt else []
+    )
+
     def _generate(prompt: Any) -> str:
         # The upstream PromptTemplate yields a StringPromptValue, not a str.
         text = prompt.to_string() if hasattr(prompt, "to_string") else str(prompt)
-        generated_text = pipe([{"role": "user", "content": text}])[0]["generated_text"]
+        messages = base_messages + [{"role": "user", "content": text}]
+        generated_text = pipe(messages)[0]["generated_text"]
         # return_full_text=True on a chat yields the full message list rather
         # than a string — normalise to the assistant turn's text.
         if isinstance(generated_text, list):
