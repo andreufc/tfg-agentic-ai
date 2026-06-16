@@ -17,17 +17,9 @@ from transformers import pipeline as hf_pipeline  # type: ignore
 
 
 def _seed_all(seed: int) -> None:
-    """Seed every relevant RNG source for fully reproducible generation.
-
-    Sets the seed on Python's ``random`` module, NumPy (if available),
-    PyTorch (CPU and all CUDA devices), and the HuggingFace/CUDA
-    deterministic-algorithm flag so that the complete sequence of
-    stochastic generation calls within a run is deterministic.
-
-    Parameters
-    ----------
-    seed : int
-        The integer seed value to apply everywhere.
+    """Seed Python's ``random``, NumPy (if available), and PyTorch (CPU and all
+    CUDA devices) so a run's full sequence of stochastic generation calls is
+    reproducible.
     """
     random.seed(seed)
     try:
@@ -72,10 +64,9 @@ def build_hf_langchain_llm(
         If ``False`` (default), only the generated continuation is
         returned; if ``True``, the prompt is prepended to the output.
     seed : int | None
-        If provided, all RNG sources (Python random, NumPy, PyTorch CPU
-        and CUDA) are seeded before the pipeline is created, making the
-        entire generation sequence within a run fully reproducible.
-        Pass ``None`` (default) to keep stochastic behaviour.
+        If given, seeds all RNG sources via ``_seed_all`` before the pipeline
+        is created, for reproducible generation. ``None`` (default) keeps
+        stochastic behaviour.
     batch_size : int
         Number of sequences processed per forward pass (default ``1``).
         Must stay at 1 for all experiments so that latency, throughput,
@@ -122,16 +113,12 @@ def build_hf_langchain_llm(
         # pipeline (no chat template applied).
         return HuggingFacePipeline(pipeline=pipe)
 
-    # Instruct path: wrap the rendered prompt as a single user message. Given a
-    # message list, the pipeline runs the exact encode->generate->decode the old
-    # manual block did by hand — internally calling
-    # apply_chat_template(tokenize=True, return_dict=True) (so the instruct
-    # control tokens reach the model, no string round-trip) then decoding with
-    # the tokenizer. Correct decoding depends on that tokenizer being the
-    # mistral-common backend (see load_model_and_tokenizer); a plain
-    # LlamaTokenizer garbles spaces / emits byte markers. The thin
-    # RunnableLambda remains only because the upstream PromptTemplate hands us a
-    # string, which must be wrapped into a messages list for chat handling.
+    # Instruct path: pass a one-message chat list so the pipeline applies the
+    # chat template internally (apply_chat_template(tokenize=True,
+    # return_dict=True)), getting the instruct control tokens to the model
+    # without a string round-trip. Correct decoding requires the tokenizer to
+    # be the mistral-common backend (see load_model_and_tokenizer) — a plain
+    # LlamaTokenizer garbles spaces / emits byte markers.
     def _generate(prompt: Any) -> str:
         # The upstream PromptTemplate yields a StringPromptValue, not a str.
         text = prompt.to_string() if hasattr(prompt, "to_string") else str(prompt)
