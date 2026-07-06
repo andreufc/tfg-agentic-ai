@@ -4,6 +4,13 @@ evaluation.py — Evaluation metrics and result aggregation.
 Provides functions to compute accuracy for GSM8K (exact numeric match)
 and MMLU (multiple-choice letter match), plus helpers to aggregate
 and display results.
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1 & WP2-T3/T4/T6: scores outputs (GSM8K number / MMLU letter) against
+  ground truth into the 0/1 correctness matrices.
+* WP2-T5/T7 & WP3-T1: those matrices are the input to the results and
+  trade-off analyses.
 """
 
 from __future__ import annotations

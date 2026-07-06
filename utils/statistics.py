@@ -2,6 +2,12 @@
 statistics.py — Statistically consistent, unbiased estimators for
 clustered experimental data (repeated seeds per problem).
 
+Connection to the project WPs
+-----------------------------
+* WP2-T5/T7 & WP3-T1: turns the seed×problem matrices into cluster-corrected
+  accuracy CIs, BCa-bootstrap/overhead intervals and between-system tests.
+* WP1-T1 & WP2-T3: also called inline to report per-run accuracy/cost CIs.
+
 Provides:
     Per-system estimation (primary scope):
     - pooled_accuracy:                  Unbiased point estimate of accuracy

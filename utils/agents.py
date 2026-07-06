@@ -3,6 +3,15 @@ agents.py — LangChain / LangGraph agent construction helpers.
 
 Provides factory functions to build the Society-of-Minds agents
 and collaboration graphs used in the thesis experiments.
+
+Connection to the project WPs
+-----------------------------
+All agents are seeded LangChain LLMs wrapping the loaded HF model, so runs stay
+reproducible.
+* WP1-T1: builds the proposer/critic/refiner template chain + baseline.
+* WP2-T3: builds the single-agent baseline chain.
+* WP2-T4/T6: builds the L1 (voting, proposer-verifier) and L2 (debate)
+  LangGraph graphs, homogeneous or heterogeneous.
 """
 
 from __future__ import annotations

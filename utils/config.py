@@ -3,6 +3,11 @@ config.py — Environment and secrets management.
 
 Loads variables from a .env file (local), Colab userdata (Google Colab),
 or Kaggle Secrets (Kaggle kernels).
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1/T4 & WP2-T1/T3/T4/T6: loads the GITHUB/HF/WANDB tokens per runtime so
+  every Kaggle notebook can clone the repo, pull models and authenticate W&B.
 """
 
 import os

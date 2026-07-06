@@ -3,6 +3,13 @@ logging_utils.py — Weights & Biases experiment tracking wrappers.
 
 Thin helpers to initialise W&B runs and log metrics consistently
 across all notebooks in the project.
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1/T4 & WP2-T3/T4/T6: opens a named run and logs metrics + result
+  matrices in one consistent schema.
+* WP3-T1: makes each thesis claim traceable to a specific W&B run ID
+  (Claim-to-Evidence).
 """
 
 from __future__ import annotations

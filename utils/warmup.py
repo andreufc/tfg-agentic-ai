@@ -6,6 +6,12 @@ the evaluation uses, forcing CUDA/bitsandbytes kernel compilation and cuBLAS
 autotuning to happen before any timed measurement. Degrades gracefully when
 CUDA is unavailable (local CPU dev) — the generation still runs, just slower,
 and no GPU-only calls are forced.
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1/T4 & WP2-T3/T4/T6: runs throwaway generations so kernel compilation
+  happens before timed runs, keeping WP3-T1 latency/throughput free of
+  cold-start artifacts.
 """
 
 from __future__ import annotations

@@ -7,6 +7,11 @@ quantisation via bitsandbytes, targeting a single 16 GB T4 GPU.
 Loading is dispatched per family: Ministral-3 and Gemma-4 (E2B/E4B) ship as
 multimodal checkpoints (loaded via the image-text class, then stripped of their
 vision/audio encoders for text-only use); Phi-4 and Qwen3 are plain causal LMs.
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1/T4 & WP2-T3/T4/T6: loads each SLM per-family in NF4 4-bit within the
+  16 GB T4 budget, incl. per-agent models in heterogeneous protocol configs.
 """
 
 from __future__ import annotations
