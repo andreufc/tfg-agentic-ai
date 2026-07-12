@@ -3,6 +3,11 @@ config.py — Environment and secrets management.
 
 Loads variables from a .env file (local), Colab userdata (Google Colab),
 or Kaggle Secrets (Kaggle kernels).
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1/T4 & WP2-T1/T3/T4/T6: loads the GITHUB/HF/WANDB tokens per runtime so
+  every Kaggle notebook can clone the repo, pull models and authenticate W&B.
 """
 
 import os
@@ -11,11 +16,13 @@ import os
 def load_env(environment: str = "local") -> None:
     """Load environment variables from the appropriate secrets backend.
 
-    Args:
-        environment: One of ``"colab"``, ``"kaggle"``, or ``"local"``
-                     (the default).
+    Parameters
+    ----------
+    environment : str
+        One of ``"colab"``, ``"kaggle"``, or ``"local"`` (the default).
 
-    Backends:
+    Backends
+    --------
     - **colab**: reads secrets via ``google.colab.userdata``.
     - **kaggle**: reads secrets via ``kaggle_secrets.UserSecretsClient``.
     - **local** (default): reads a ``.env`` file using ``python-dotenv``.

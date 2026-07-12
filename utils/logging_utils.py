@@ -3,6 +3,13 @@ logging_utils.py — Weights & Biases experiment tracking wrappers.
 
 Thin helpers to initialise W&B runs and log metrics consistently
 across all notebooks in the project.
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1/T4 & WP2-T3/T4/T6: opens a named run and logs metrics + result
+  matrices in one consistent schema.
+* WP3-T1: makes each thesis claim traceable to a specific W&B run ID
+  (Claim-to-Evidence).
 """
 
 from __future__ import annotations
@@ -37,8 +44,9 @@ def init_wandb(
     config : dict | None
         Hyperparameters / metadata to log.
     project : str | None
-        W&B project name. Defaults to ``WANDB_PROJECT`` env var
-        or ``"tfg-agentic-ai"``.
+        W&B project name. Defaults to the ``WANDB_PROJECT`` env var, or
+        else ``"agentic-collab"`` on Colab/Kaggle and ``"dev-agentic-collab"``
+        locally — keeping ad-hoc local runs out of the real project.
     tags : list[str] | None
         Tags to attach to the run.
     notes : str | None
@@ -66,8 +74,8 @@ def define_wandb_chart_only_metrics(
 
     By default, W&B automatically promotes the **last** logged value
     of every metric key into run.summary.  For per-sample metrics
-    (e.g. gsm8k_sample/*, mmlu_sample/*) this clutters the summary with a single, 
-    non-representative 0/1 value.
+    (e.g. gsm8k_sample/*, mmlu_sample/*) this clutters the summary with a
+    single, non-representative 0/1 value.
 
     Calling this function right after :func:`init_wandb` tells W&B
     to keep those keys in the **history** (charts) only.
@@ -94,7 +102,6 @@ def finish_wandb() -> None:
     wandb.finish()
 
 
-
 def log_stat_summary(
     prefix: str,
     stat: dict,
@@ -112,18 +119,25 @@ def log_stat_summary(
         Result dict from any ``*_statistics`` function.
     keys : list[str] | None
         Subset of keys to log.  Defaults to the common set:
-        ``mean`` (or ``p_hat``/``mean_peak``/``geometric_mean``),
-        ``ci_lower``, ``ci_upper``, ``ci_method``.
+        ``mean`` (or ``p_hat``/``geometric_mean``/``mean_diff``/
+        ``mean_of_ratios``), ``ci_lower``, ``ci_upper``, ``ci_method``.
+        ``mean_peak`` (from ``vram_statistics``) is a special case,
+        defaulting to ``peak_ci_lower``/``peak_ci_upper`` instead.
     """
     if keys is None:
         # Pick the primary point-estimate key present in the dict.
-        for candidate in ("mean", "p_hat", "mean_peak", "geometric_mean",
-                          "mean_diff", "mean_of_ratios"):
-            if candidate in stat:
-                keys = [candidate, "ci_lower", "ci_upper"]
-                break
+        # mean_peak (vram_statistics) uses peak_ci_lower/peak_ci_upper
+        # instead of ci_lower/ci_upper, to disambiguate from mean_avg.
+        if "mean_peak" in stat:
+            keys = ["mean_peak", "peak_ci_lower", "peak_ci_upper"]
         else:
-            keys = ["ci_lower", "ci_upper"]
+            for candidate in ("mean", "p_hat", "geometric_mean",
+                              "mean_diff", "mean_of_ratios"):
+                if candidate in stat:
+                    keys = [candidate, "ci_lower", "ci_upper"]
+                    break
+            else:
+                keys = ["ci_lower", "ci_upper"]
         if "ci_method" in stat:
             keys = list(keys) + ["ci_method"]
 

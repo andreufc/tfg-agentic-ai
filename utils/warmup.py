@@ -6,6 +6,12 @@ the evaluation uses, forcing CUDA/bitsandbytes kernel compilation and cuBLAS
 autotuning to happen before any timed measurement. Degrades gracefully when
 CUDA is unavailable (local CPU dev) — the generation still runs, just slower,
 and no GPU-only calls are forced.
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1/T4 & WP2-T3/T4/T6: runs throwaway generations so kernel compilation
+  happens before timed runs, keeping WP3-T1 latency/throughput free of
+  cold-start artifacts.
 """
 
 from __future__ import annotations
@@ -48,7 +54,7 @@ def warmup_model(
     tokenizer : PreTrainedTokenizer
         The associated tokenizer.
     max_new_tokens : int
-        Tokens to generate per warmup iteration (default ``64`` — enough to
+        Tokens to generate per warmup iteration (default ``128`` — enough to
         exercise the decode loop without wasting time).
     n_iterations : int
         Number of throwaway generations (default ``2``).

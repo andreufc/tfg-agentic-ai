@@ -4,6 +4,13 @@ evaluation.py — Evaluation metrics and result aggregation.
 Provides functions to compute accuracy for GSM8K (exact numeric match)
 and MMLU (multiple-choice letter match), plus helpers to aggregate
 and display results.
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1 & WP2-T3/T4/T6: scores outputs (GSM8K number / MMLU letter) against
+  ground truth into the 0/1 correctness matrices.
+* WP2-T5/T7 & WP3-T1: those matrices are the input to the results and
+  trade-off analyses.
 """
 
 from __future__ import annotations
@@ -18,14 +25,11 @@ from typing import Sequence
 # ---------------------------------------------------------------------------
 
 def normalize_numeric(text: str) -> str | None:
-    """Extract the last number from a string, stripping commas and
-    trailing dots.
+    """Extract the last number from a string and canonicalize it.
 
-    The returned string is the canonical representation of the
-    number — trailing dots (42. → 42) and unnecessary
-    trailing zeros (42.00 → 42) are removed so that
-    downstream comparisons are reliable.
-
+    Strips commas, then canonicalizes via a float round-trip so
+    formatting differences don't cause false negatives in downstream
+    comparisons (e.g. ``42.`` -> ``42``, ``42.00`` -> ``42``).
     Returns None if no number is found.
     """
     # Remove commas from numbers like 1,234
@@ -60,10 +64,9 @@ def gsm8k_match(prediction: str | None, reference: str | None) -> bool:
 
     The comparison strategy is:
 
-    1. Try to convert both sides to float and compare with an
-       epsilon margin (rel_tol=1e-9) to absorb floating-point
-       rounding.  This handles 42.0 vs 42
-       3.10 vs 3.1 etc.
+    1. Try to convert both sides to float and compare with an epsilon
+       margin (rel_tol=1e-9) to absorb floating-point rounding —
+       e.g. 42.0 vs 42, or 3.10 vs 3.1.
     2. If either side cannot be converted to float, fall back to
        a plain string comparison of the canonicalized forms.
     """
@@ -103,6 +106,7 @@ def gsm8k_accuracy(
         if gsm8k_match(pred, ref)
     )
     return correct / len(predictions) if predictions else 0.0
+
 
 def _number_from_boxed_content(content: str) -> str | None:
     """Return the numeric value from a \\boxed{...} content string, or None.
@@ -257,6 +261,7 @@ def get_ground_truth_letter(answer_idx: int) -> str:
         The letter ``"A"``–``"D"``.
     """
     return _LETTER_MAP[answer_idx]
+
 
 # ---------------------------------------------------------------------------
 # Results helpers

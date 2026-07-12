@@ -3,6 +3,13 @@ data.py — Dataset loading and preprocessing utilities.
 
 Provides thin wrappers around Hugging Face Datasets for GSM8K and MMLU,
 with standardised column names and optional subsampling.
+
+Connection to the project WPs
+-----------------------------
+* WP2-T1: implements GSM8K/MMLU ingestion — standardised columns + seeded
+  subsampling.
+* WP1-T1 & WP2-T3/T4/T6: serves that same split as the evaluation set for the
+  template, baselines and protocols.
 """
 
 from __future__ import annotations
