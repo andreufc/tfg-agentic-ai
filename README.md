@@ -98,13 +98,26 @@ The first code cell will automatically detect Kaggle, clone the repo, and load s
 |---|---|
 | `utils.config` | Load secrets from `.env` (local), Colab userdata, or Kaggle Secrets |
 | `utils.data` | Load & subsample GSM8K / MMLU datasets |
-| `utils.models` | Load HF models with NF4 quantisation (bitsandbytes) |
+| `utils.models` | Load HF models — NF4 4-bit (bitsandbytes) for most families, or the native compressed-tensors w4a16 path for the pre-quantized Gemma-4 QAT checkpoints |
 | `utils.evaluation` | Compute accuracy — numeric match (GSM8K) / letter match (MMLU) |
 | `utils.agents` | Wrap HF models as LangChain `HuggingFacePipeline` LLMs with optional seeded generation |
 | `utils.instrumentation` | Count input/output tokens; measure GPU peak VRAM and utilisation; compute throughput (tokens/s) |
 | `utils.warmup` | Run throwaway generations to trigger CUDA/cuBLAS kernel compilation before timed measurements |
 | `utils.statistics` | Cluster-corrected estimators: accuracy (Student-t CI), latency/tokens (BCa bootstrap), overhead ratios (log-space t), VRAM (Student-t); between-system Welch t-test and Mann-Whitney U |
 | `utils.logging_utils` | Initialise & log metrics to W&B runs |
+
+---
+
+## 🗜️ Model Quantization
+
+All models are loaded 4-bit within the T4's 16 GB budget via `utils.models.load_model_and_tokenizer`, but the quantization mechanism differs by family:
+
+| Family | Checkpoint | Quantization |
+|---|---|---|
+| Mistral/Ministral-3, Phi-4, Qwen3 | full-precision HF checkpoint | **bitsandbytes NF4**, applied on the fly at load time |
+| Gemma-4 (E2B/E4B) | `google/gemma-4-{E2B,E4B}-it-qat-w4a16-ct` | **compressed-tensors w4a16** (QAT) — already 4-bit quantized on disk, no bitsandbytes step |
+
+The Gemma-4 checkpoints are Google's official pre-quantized QAT release, serialized in the `compressed-tensors` format (4-bit weights / 16-bit activations). They are loaded by calling `load_model_and_tokenizer(model_id, quantize_4bit=False)`: `quantize_4bit=False` skips bitsandbytes and lets `transformers`' compressed-tensors `HFQuantizer` integration restore the checkpoint's own `quantization_config` on load — forcing `dtype=torch.float16` rather than the checkpoint's declared `bfloat16`, since the T4 (compute capability 7.5) has no native bf16 support and float16 is also compressed-tensors' own recommended compute dtype. (Passing `quantize_4bit=True` for such a `-qat-w4a16-ct` checkpoint raises, since it cannot be re-quantized.) This requires the `compressed-tensors` PyPI package (pinned in `requirements.txt`) in addition to `transformers`' built-in quantizer support.
 
 ---
 
