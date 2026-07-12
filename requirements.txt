@@ -16,7 +16,6 @@ mistral-common>=1.8.6
 torch>=2.0.0
 accelerate>=0.30.0
 bitsandbytes>=0.43.0
-compressed-tensors>=0.17.1  # pre-quantized w4a16 Gemma-4 QAT checkpoints
 
 # ========================
 # Datasets & Evaluation
