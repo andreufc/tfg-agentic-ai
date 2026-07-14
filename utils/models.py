@@ -18,7 +18,7 @@ vision/audio encoders for text-only use); Phi-4 and Qwen3 are plain causal LMs.
 
 Connection to the project WPs
 -----------------------------
-* WP1-T1/T4 & WP2-T3/T4/T6: loads each SLM per-family in 4-bit within the
+* WP1-T1/T4 & WP2-T3/T4/T6: loads each SLM per-family in NF4 4-bit within the
   16 GB T4 budget, incl. per-agent models in heterogeneous protocol configs.
 """
 
