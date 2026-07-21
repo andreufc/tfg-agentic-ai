@@ -1,14 +1,16 @@
 """
 evaluation.py — Evaluation metrics and result aggregation.
 
-Provides functions to compute accuracy for GSM8K (exact numeric match)
-and MMLU (multiple-choice letter match), plus helpers to aggregate
-and display results.
+Provides functions to compute accuracy for GSM8K (exact numeric match),
+MMLU (multiple-choice letter match) and MATH-500 (LaTeX/symbolic
+equivalence via math-verify), plus helpers to aggregate and display
+results.
 
 Connection to the project WPs
 -----------------------------
-* WP1-T1 & WP2-T3/T4/T6: scores outputs (GSM8K number / MMLU letter) against
-  ground truth into the 0/1 correctness matrices.
+* WP1-T1 & WP2-T3/T4/T6: scores outputs (GSM8K number / MMLU letter /
+  MATH-500 expression) against ground truth into the 0/1 correctness
+  matrices.
 * WP2-T5/T7 & WP3-T1: those matrices are the input to the results and
   trade-off analyses.
 """
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from typing import Sequence
 
 
@@ -108,6 +111,40 @@ def gsm8k_accuracy(
     return correct / len(predictions) if predictions else 0.0
 
 
+def _iter_boxed_contents(text: str) -> list[str]:
+    """Return every brace-balanced ``\\boxed{...}`` content, in document order.
+
+    Walks each ``\\boxed{`` with a depth counter so nested LaTeX
+    (``\\boxed{\\frac{1}{2}}``) is captured in full instead of being
+    truncated at the first ``}``. A ``\\boxed{`` whose braces never
+    balance (e.g. a truncated generation) is skipped. Shared by GSM8K
+    (which scans all occurrences in reverse) and MATH-500 (which wants
+    only the last one).
+    """
+    contents = []
+    pos = 0
+    marker = "\\boxed{"
+    while True:
+        start = text.find(marker, pos)
+        if start == -1:
+            break
+        i = start + len(marker)
+        depth = 1
+        content_start = i
+        while i < len(text) and depth > 0:
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+            i += 1
+        if depth == 0:
+            contents.append(text[content_start:i - 1])
+            pos = i
+        else:
+            break
+    return contents
+
+
 def _number_from_boxed_content(content: str) -> str | None:
     """Return the numeric value from a \\boxed{...} content string, or None.
 
@@ -136,9 +173,9 @@ def extract_gsm8k_prediction(agent_output: str) -> str | None:
     The returned value is canonicalized so it can be compared directly
     with the ground truth.  Returns ``None`` if no number is found.
     """
-    # Collect all \boxed{} contents and scan from the end so the last
-    # numeric answer wins over intermediate boxed intermediate values.
-    for content in reversed(re.findall(r"\\boxed\{([^}]*)\}", agent_output)):
+    # Collect all balanced \boxed{} contents and scan from the end so the
+    # last numeric answer wins over intermediate boxed values.
+    for content in reversed(_iter_boxed_contents(agent_output)):
         raw = _number_from_boxed_content(content)
         if raw is not None:
             try:
@@ -261,6 +298,121 @@ def get_ground_truth_letter(answer_idx: int) -> str:
         The letter ``"A"``–``"D"``.
     """
     return _LETTER_MAP[answer_idx]
+
+
+# ---------------------------------------------------------------------------
+# MATH-500 evaluation
+# ---------------------------------------------------------------------------
+
+def _last_boxed_content(text: str) -> str | None:
+    """Return the content of the last ``\\boxed{...}`` in text, brace-balanced.
+
+    Thin wrapper over :func:`_iter_boxed_contents` — see there for the
+    balanced-scan semantics. Returns None if no balanced ``\\boxed{}`` exists.
+    """
+    contents = _iter_boxed_contents(text)
+    return contents[-1] if contents else None
+
+
+def extract_math_prediction(agent_output: str) -> str | None:
+    """Extract a display-only MATH-500 prediction from an agent's output.
+
+    This is used solely to populate the ``final_output`` column of the
+    results table for human inspection — correctness is computed by
+    :func:`math_match` on the *full* agent output, since ``math_verify``
+    is itself a robust boxed/LaTeX extractor and re-cutting the string
+    here first would only throw away information (and could disagree
+    with what actually got scored).
+
+    Search order:
+    1. Last ``\\boxed{...}`` content (brace-balanced).
+    2. Last ``$...$`` inline-math span.
+    3. None.
+    """
+    boxed = _last_boxed_content(agent_output)
+    if boxed is not None:
+        return boxed.strip()
+
+    inline = re.findall(r"\$([^$]+)\$", agent_output)
+    if inline:
+        return inline[-1].strip()
+
+    return None
+
+
+def math_match(prediction: str | None, reference: str | None) -> bool:
+    """Check whether a full MATH-500 model output matches the reference answer.
+
+    Both values may be None/empty — in that case the result is False.
+    Scoring uses ``math_verify`` (sympy-based) for LaTeX/symbolic
+    equivalence (e.g. ``1/2`` == ``\\frac{1}{2}`` == ``0.5``), since a
+    plain numeric or string comparison cannot handle MATH-500's
+    LaTeX-formatted answers (fractions, roots, intervals, matrices, ...).
+
+    ``prediction`` should be the *full* model output (not a pre-extracted
+    substring) — ``math_verify.parse`` already performs boxed/LaTeX
+    extraction with its own fallback chain, so handing it the raw text is
+    more robust than re-extracting first.
+
+    Note the argument order: ``verify(gold, pred)`` takes the gold
+    reference first. This is intentionally asymmetric (e.g. for
+    inequalities vs. their solution sets) — swapping the arguments
+    would silently change results.
+
+    Both ``math_verify.parse`` and ``verify`` apply a per-call timeout
+    using ``signal.SIGALRM`` on Unix (cheap) but fall back to spawning a
+    subprocess on Windows, which silently breaks under a test runner
+    (the subprocess can't be spawned, and the failure is swallowed as an
+    empty parse). Kaggle (the actual execution environment) is Linux, so
+    both timeouts stay enabled there; on Windows (local dev/tests only)
+    they're disabled.
+    """
+    if not prediction or not reference:
+        return False
+
+    try:
+        from math_verify import parse, verify
+    except ImportError as exc:
+        raise ImportError(
+            "math-verify is required for MATH-500 scoring — "
+            "pip install 'math-verify[antlr4_13_2]'"
+        ) from exc
+
+    on_windows = sys.platform == "win32"
+    parsing_timeout = None if on_windows else 5
+    verify_timeout = None if on_windows else 5
+
+    try:
+        gold = parse(f"${reference}$", parsing_timeout=parsing_timeout)
+        if not gold:
+            gold = parse(reference, parsing_timeout=parsing_timeout)
+        if not gold:
+            return False
+
+        pred = parse(prediction, parsing_timeout=parsing_timeout)
+        if not pred:
+            return False
+
+        return bool(verify(gold, pred, timeout_seconds=verify_timeout))
+    except Exception:
+        # A single pathological LaTeX sample must not kill a 384-invocation
+        # evaluation run — treat any parser/sympy failure as "not a match".
+        return False
+
+
+def math_accuracy(
+    predictions: Sequence[str],
+    references: Sequence[str],
+) -> float:
+    """Compute MATH-500 accuracy via ``math_match`` over full model outputs."""
+    if len(predictions) != len(references):
+        raise ValueError("predictions and references must have the same length")
+
+    correct = sum(
+        1 for pred, ref in zip(predictions, references)
+        if math_match(pred, ref)
+    )
+    return correct / len(predictions) if predictions else 0.0
 
 
 # ---------------------------------------------------------------------------

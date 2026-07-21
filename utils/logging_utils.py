@@ -74,8 +74,8 @@ def define_wandb_chart_only_metrics(
 
     By default, W&B automatically promotes the **last** logged value
     of every metric key into run.summary.  For per-sample metrics
-    (e.g. gsm8k_sample/*, mmlu_sample/*) this clutters the summary with a
-    single, non-representative 0/1 value.
+    (e.g. gsm8k_sample/*, mmlu_sample/*, math_sample/*) this clutters the
+    summary with a single, non-representative 0/1 value.
 
     Calling this function right after :func:`init_wandb` tells W&B
     to keep those keys in the **history** (charts) only.
@@ -84,10 +84,10 @@ def define_wandb_chart_only_metrics(
     ----------
     prefixes : list[str] | None
         Glob-style metric prefixes to exclude from summary.
-        Defaults to ``["gsm8k_sample/*", "mmlu_sample/*"]``.
+        Defaults to ``["gsm8k_sample/*", "mmlu_sample/*", "math_sample/*"]``.
     """
     if prefixes is None:
-        prefixes = ["gsm8k_sample/*", "mmlu_sample/*"]
+        prefixes = ["gsm8k_sample/*", "mmlu_sample/*", "math_sample/*"]
     for prefix in prefixes:
         wandb.define_metric(prefix, summary="none")
 

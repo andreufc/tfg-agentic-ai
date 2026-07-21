@@ -1,13 +1,13 @@
 """
 data.py — Dataset loading and preprocessing utilities.
 
-Provides thin wrappers around Hugging Face Datasets for GSM8K and MMLU,
-with standardised column names and optional subsampling.
+Provides thin wrappers around Hugging Face Datasets for GSM8K, MMLU and
+MATH-500, with standardised column names and optional subsampling.
 
 Connection to the project WPs
 -----------------------------
-* WP2-T1: implements GSM8K/MMLU ingestion — standardised columns + seeded
-  subsampling.
+* WP2-T1: implements GSM8K/MMLU/MATH-500 ingestion — standardised columns +
+  seeded subsampling.
 * WP1-T1 & WP2-T3/T4/T6: serves that same split as the evaluation set for the
   template, baselines and protocols.
 """
@@ -152,4 +152,65 @@ def format_mmlu_prompt(question: str, choices: Sequence[str]) -> str:
     )
     return (
         f"{question}\n\n{choices_block}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# MATH-500
+# ---------------------------------------------------------------------------
+
+def load_math500(
+    split: str = "test",
+    n_samples: Optional[int] = None,
+    seed: int = 42,
+) -> Dataset:
+    """Load the MATH-500 dataset (HuggingFaceH4/MATH-500).
+
+    MATH-500 is the standard 500-problem subset of the hendrycks MATH
+    test set (the original ``hendrycks/competition_math`` repo was
+    removed from the Hub for DMCA reasons). Only a ``test`` split
+    exists.
+
+    Parameters
+    ----------
+    split : str
+        Dataset split (only "test" exists for this dataset).
+    n_samples : int | None
+        If given, randomly subsample to this many examples.
+    seed : int
+        Random seed for reproducible subsampling.
+
+    Returns
+    -------
+    Dataset
+        A HF Dataset with columns ``problem``, ``solution``, ``answer``,
+        ``subject``, ``level`` (1-5) and ``unique_id``. Unlike GSM8K,
+        ``answer`` is already the final answer (raw LaTeX, no delimiters)
+        — there is no ``####`` marker to parse out, so no
+        ``extract_math500_answer`` counterpart is needed.
+    """
+    ds = load_dataset("HuggingFaceH4/MATH-500", split=split)
+    if n_samples is not None:
+        ds = ds.shuffle(seed=seed).select(range(min(n_samples, len(ds))))
+    return ds
+
+
+def format_math_prompt(problem: str) -> str:
+    """Format a MATH-500 problem using EvalScope's competition-math template.
+
+    Parameters
+    ----------
+    problem : str
+        The raw MATH-500 problem statement.
+
+    Returns
+    -------
+    str
+        A formatted prompt ready to be sent to a model. Notebooks build
+        their own equivalent ``PromptTemplate`` (as with GSM8K); this
+        function documents the canonical wording in one importable place.
+    """
+    return (
+        f"Problem:\n{problem}\n\n"
+        "Please reason step by step, and put your final answer within \\boxed{}."
     )

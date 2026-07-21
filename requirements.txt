@@ -23,6 +23,7 @@ compressed-tensors>=0.17.1  # pre-quantized w4a16 Gemma-4 QAT checkpoints
 # ========================
 datasets>=2.19.0
 evaluate>=0.4.0
+math-verify[antlr4_13_2]>=0.7.0  # sympy-based MATH-500 answer equivalence (EvalScope-style)
 
 # ========================
 # Experiment tracking
