@@ -184,12 +184,16 @@ def load_math500(
     -------
     Dataset
         A HF Dataset with columns ``problem``, ``solution``, ``answer``,
-        ``subject``, ``level`` (1-5) and ``unique_id``. Unlike GSM8K,
-        ``answer`` is already the final answer (raw LaTeX, no delimiters)
-        — there is no ``####`` marker to parse out, so no
-        ``extract_math500_answer`` counterpart is needed.
+        ``subject``, ``level`` (1-4 — level 5 is excluded, see below) and
+        ``unique_id``. Unlike GSM8K, ``answer`` is already the final answer
+        (raw LaTeX, no delimiters) — there is no ``####`` marker to parse
+        out, so no ``extract_math500_answer`` counterpart is needed.
     """
     ds = load_dataset("HuggingFaceH4/MATH-500", split=split)
+    # Level-5 (hardest) problems produce long reasoning chains that frequently
+    # exceed the fixed generation budget and get truncated before `\boxed{}` —
+    # excluded so accuracy reflects capability, not truncation.
+    ds = ds.filter(lambda x: x["level"] <= 4)
     if n_samples is not None:
         ds = ds.shuffle(seed=seed).select(range(min(n_samples, len(ds))))
     return ds
