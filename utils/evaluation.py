@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 import re
 import sys
+from functools import lru_cache
 from typing import Sequence
 
 
@@ -314,6 +315,7 @@ def _last_boxed_content(text: str) -> str | None:
     return contents[-1] if contents else None
 
 
+@lru_cache(maxsize=4096)
 def extract_math_prediction(agent_output: str) -> str | None:
     """Extract a display-only MATH-500 prediction from an agent's output.
 
@@ -340,6 +342,39 @@ def extract_math_prediction(agent_output: str) -> str | None:
     return None
 
 
+def _math_verify_timeouts() -> tuple[int | None, int | None]:
+    """Return ``(parsing_timeout, verify_timeout)`` for ``math_verify`` calls.
+
+    Both ``math_verify.parse`` and ``verify`` apply a per-call timeout using
+    ``signal.SIGALRM`` on Unix (cheap) but fall back to spawning a subprocess
+    on Windows, which silently breaks under a test runner (the subprocess
+    can't be spawned, and the failure is swallowed as an empty parse).
+    Kaggle (the actual execution environment) is Linux, so both timeouts
+    stay enabled there; on Windows (local dev/tests only) they're disabled.
+    """
+    on_windows = sys.platform == "win32"
+    return (None, None) if on_windows else (5, 5)
+
+
+@lru_cache(maxsize=4096)
+def _parse_math_cached(text: str):
+    """Cached ``math_verify.parse``.
+
+    The ANTLR LaTeX -> sympy parse is the expensive, order-independent half
+    of a comparison — caching it here means ``math_match`` and
+    ``math_equiv`` share one parse per distinct string instead of
+    re-parsing the same generation on every pairwise check (e.g. grouping a
+    Self-Consistency problem's 5 generations touches each text in up to 4
+    comparisons). Returns ``None`` on any parse failure.
+    """
+    from math_verify import parse
+    parsing_timeout, _ = _math_verify_timeouts()
+    try:
+        return parse(text, parsing_timeout=parsing_timeout)
+    except Exception:
+        return None
+
+
 def math_match(prediction: str | None, reference: str | None) -> bool:
     """Check whether a full MATH-500 model output matches the reference answer.
 
@@ -354,50 +389,78 @@ def math_match(prediction: str | None, reference: str | None) -> bool:
     extraction with its own fallback chain, so handing it the raw text is
     more robust than re-extracting first.
 
-    Note the argument order: ``verify(gold, pred)`` takes the gold
-    reference first. This is intentionally asymmetric (e.g. for
-    inequalities vs. their solution sets) — swapping the arguments
-    would silently change results.
-
-    Both ``math_verify.parse`` and ``verify`` apply a per-call timeout
-    using ``signal.SIGALRM`` on Unix (cheap) but fall back to spawning a
-    subprocess on Windows, which silently breaks under a test runner
-    (the subprocess can't be spawned, and the failure is swallowed as an
-    empty parse). Kaggle (the actual execution environment) is Linux, so
-    both timeouts stay enabled there; on Windows (local dev/tests only)
-    they're disabled.
+    Note the argument order: ``verify(reference, pred)`` takes the ground-
+    truth reference first. This is intentionally asymmetric (e.g. for
+    inequalities vs. their solution sets) — swapping the arguments would
+    silently change results, and is why this function is *not* reused for
+    candidate-vs-candidate comparisons (see :func:`math_equiv`).
     """
     if not prediction or not reference:
         return False
 
     try:
-        from math_verify import parse, verify
+        from math_verify import verify
     except ImportError as exc:
         raise ImportError(
             "math-verify is required for MATH-500 scoring — "
             "pip install 'math-verify[antlr4_13_2]'"
         ) from exc
 
-    on_windows = sys.platform == "win32"
-    parsing_timeout = None if on_windows else 5
-    verify_timeout = None if on_windows else 5
+    _, verify_timeout = _math_verify_timeouts()
 
     try:
-        gold = parse(f"${reference}$", parsing_timeout=parsing_timeout)
-        if not gold:
-            gold = parse(reference, parsing_timeout=parsing_timeout)
-        if not gold:
+        reference_parsed = _parse_math_cached(f"${reference}$")
+        if not reference_parsed:
+            reference_parsed = _parse_math_cached(reference)
+        if not reference_parsed:
             return False
 
-        pred = parse(prediction, parsing_timeout=parsing_timeout)
+        pred = _parse_math_cached(prediction)
         if not pred:
             return False
 
-        return bool(verify(gold, pred, timeout_seconds=verify_timeout))
+        return bool(verify(reference_parsed, pred, timeout_seconds=verify_timeout))
     except Exception:
         # A single pathological LaTeX sample must not kill a 384-invocation
         # evaluation run — treat any parser/sympy failure as "not a match".
         return False
+
+
+@lru_cache(maxsize=4096)
+def _verify_cached(a_full: str, b_full: str) -> bool:
+    """Cached, order-sensitive pairwise ``math_verify.verify``.
+
+    Only called via :func:`math_equiv`, which always passes its two
+    arguments pre-sorted — so a symmetric caller collapses ``(a, b)`` and
+    ``(b, a)`` onto the same cache entry instead of paying for both
+    directions.
+    """
+    from math_verify import verify
+    _, verify_timeout = _math_verify_timeouts()
+    pa, pb = _parse_math_cached(a_full), _parse_math_cached(b_full)
+    if not pa or not pb:
+        return False
+    try:
+        return bool(verify(pa, pb, timeout_seconds=verify_timeout)) or \
+            bool(verify(pb, pa, timeout_seconds=verify_timeout))
+    except Exception:
+        # A single pathological LaTeX sample must not break a whole vote.
+        return False
+
+
+def math_equiv(a_full: str, b_full: str) -> bool:
+    """Symmetric MATH-500 equivalence between two full *candidate* outputs.
+
+    Used to group Self-Consistency generations into equivalence classes —
+    unlike :func:`math_match`, neither side is the ground-truth reference,
+    so both verify directions are checked (``math_verify.verify`` is itself
+    asymmetric).
+    Both values may be None/empty, in which case the result is False.
+    """
+    if not a_full or not b_full:
+        return False
+    key = (a_full, b_full) if a_full <= b_full else (b_full, a_full)
+    return _verify_cached(*key)
 
 
 def math_accuracy(

@@ -14,6 +14,7 @@ Connection to the project WPs
 
 from __future__ import annotations
 
+import random
 from typing import Optional, Sequence
 
 from datasets import load_dataset, Dataset  # type: ignore
@@ -218,3 +219,55 @@ def format_math_prompt(problem: str) -> str:
         f"Problem:\n{problem}\n\n"
         "Please reason step by step, and put your final answer within \\boxed{}."
     )
+
+
+# ---------------------------------------------------------------------------
+# Sample extension (SC's MMLU eval_size differs from the v2.x baseline's)
+# ---------------------------------------------------------------------------
+
+def extend_sample(
+    items: Sequence,
+    base_n: int,
+    extra_n: int,
+    seed: int,
+    extra_seed: int,
+) -> list:
+    """Extend a baseline-seeded sample with extra items, base as an exact prefix.
+
+    ``random.sample`` selects positions purely as a function of population
+    length (not content), so sampling indices with ``random.Random(seed)``
+    reproduces the exact same items as the baselines' ``random.seed(seed);
+    random.sample(list(items), base_n)`` call. The returned list's first
+    ``base_n`` items are therefore identical to — and pair exactly with — the
+    v2.x baseline subset; the remaining ``extra_n`` are drawn from what's left
+    under an independent ``extra_seed``, so extending the sample never
+    perturbs the base subset's draw.
+
+    Used for MMLU, whose SC eval_size (128) differs from the v2.x baselines'
+    (100): the first 100 pair with the baselines for overhead ratios, and all
+    128 are used for SC accuracy.
+
+    Parameters
+    ----------
+    items : Sequence
+        The full pool to sample from (e.g. a loaded HF ``Dataset``).
+    base_n : int
+        Size of the baseline-reproducing prefix.
+    extra_n : int
+        Number of additional items to draw from the remainder.
+    seed : int
+        Seed reproducing the baseline's ``base_n`` subset.
+    extra_seed : int
+        Independent seed for the ``extra_n`` extension.
+
+    Returns
+    -------
+    list
+        ``base_n + extra_n`` items: the exact baseline prefix, then the extras.
+    """
+    pool = list(items)
+    idx_pool = list(range(len(pool)))
+    base_idx = random.Random(seed).sample(idx_pool, base_n)
+    remainder_idx = [i for i in idx_pool if i not in set(base_idx)]
+    extra_idx = random.Random(extra_seed).sample(remainder_idx, extra_n)
+    return [pool[i] for i in base_idx] + [pool[i] for i in extra_idx]

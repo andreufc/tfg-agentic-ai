@@ -28,7 +28,7 @@ tfg-agentic-ai/
 │   ├── models.py                 # HF model loading with NF4 quantisation
 │   ├── evaluation.py             # Accuracy metrics (numeric / letter match)
 │   ├── agents.py                 # LangChain LLM factory + seeded generation
-│   ├── instrumentation.py        # Token counting, GPU VRAM & utilisation tracking
+│   ├── instrumentation.py        # Token counting, GPU peak-VRAM tracking, throughput
 │   ├── warmup.py                 # Pre-measurement model warmup
 │   ├── statistics.py             # Cluster-corrected statistical estimators
 │   └── logging_utils.py          # W&B experiment tracking helpers
@@ -101,7 +101,7 @@ The first code cell will automatically detect Kaggle, clone the repo, and load s
 | `utils.models` | Load HF models — NF4 4-bit (bitsandbytes) for most families, or the native compressed-tensors w4a16 path for the pre-quantized Gemma-4 QAT checkpoints |
 | `utils.evaluation` | Compute accuracy — numeric match (GSM8K) / letter match (MMLU) |
 | `utils.agents` | Wrap HF models as LangChain `HuggingFacePipeline` LLMs with optional seeded generation |
-| `utils.instrumentation` | Count input/output tokens; measure GPU peak VRAM and utilisation; compute throughput (tokens/s) |
+| `utils.instrumentation` | Count input/output tokens; measure GPU peak VRAM; compute throughput (tokens/s) |
 | `utils.warmup` | Run throwaway generations to trigger CUDA/cuBLAS kernel compilation before timed measurements |
 | `utils.statistics` | Cluster-corrected estimators: accuracy (Student-t CI), latency/tokens (BCa bootstrap), overhead ratios (log-space t), VRAM (Student-t); between-system Welch t-test and Mann-Whitney U |
 | `utils.logging_utils` | Initialise & log metrics to W&B runs |

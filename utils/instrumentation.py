@@ -1,22 +1,27 @@
 """
-instrumentation.py — Token counting and GPU resource tracking.
+instrumentation.py — Token counting, GPU peak-VRAM tracking, and throughput.
 
 Provides per-step helpers for:
 - Token counting (input and output tokens via the model's own tokenizer)
 - GPU peak VRAM measurement (torch.cuda, deterministic, zero overhead)
-- GPU utilization % sampling (pynvml background thread, ~100 ms polling)
 - Generation throughput (output tokens / generation latency)
+- ``timed_invoke``: composes the above around a single ``chain.invoke`` call
+
+Connection to the project WPs
+-----------------------------
+* WP1-T1/T4 & WP2-T3/T4/T6: measures tokens, peak VRAM and throughput per
+  generation, outside the timed region so latency stays clean.
+* WP3-T1: feeds those cost metrics into the accuracy-to-compute analysis (OBJ-3).
 
 All GPU helpers degrade gracefully to 0.0 when CUDA is unavailable
-(e.g. local CPU development). The pynvml sampler likewise degrades
-if nvidia-ml-py is not installed — a RuntimeWarning is issued only
-when a CUDA GPU is present but pynvml is missing.
+(e.g. local CPU development).
 
 Design notes
 ------------
 - Token counting is intentionally performed *outside* the timed
   ``chain.invoke`` region so latency measurements remain
-  uncontaminated (see ``run_agent_step`` in the notebooks).
+  uncontaminated (see ``timed_invoke`` below and ``run_agent_step``
+  in the v1.x/v2.x notebooks, which inline the same sequence).
 - ``count_tokens`` uses ``add_special_tokens=False`` for consistency
   across all agents — chat-template wrapping may add 1–2 tokens vs
   what the pipeline actually feeds the model, but both MAS and
@@ -24,35 +29,24 @@ Design notes
 - Peak VRAM must be reset with ``reset_gpu_peak()`` immediately before
   each measured scope; otherwise the counter reflects the global max
   since the last manual reset (which includes model load).
-- The pynvml sampler polls at ≥100 ms intervals; the daemon thread
-  holds the GIL only briefly per sample (NVML query ≈ 0.1–1 ms), so
-  GIL contention during GPU-bound generation is negligible.
 - ``tokens_per_second`` measures end-to-end throughput (prefill +
-  decode), not pure decode rate. Both MAS and baseline are measured
-  identically so the ratio is a sound efficiency comparison.
+  decode + Python/LangChain wrapper overhead), not pure decode rate.
+  Both MAS and baseline are measured identically so the ratio is a
+  sound efficiency comparison across protocols for the *same* model —
+  a protocol-dependent signal, which is what the accuracy-to-compute
+  analysis needs. A separate prefill-free "pure decode rate" metric
+  was prototyped but dropped: it is a per-model hardware constant that
+  does not vary with the protocol, so it cannot inform that tradeoff,
+  and measuring it adds real per-token GPU-sync overhead for a number
+  no experiment consumes.
 """
 
 from __future__ import annotations
 
-import os
-import threading
 import time
-import warnings
 from typing import Any, Optional, Union
 
 import torch
-
-
-# ---------------------------------------------------------------------------
-# pynvml: optional import — graceful degradation
-# ---------------------------------------------------------------------------
-
-try:
-    import pynvml  # type: ignore
-    pynvml.nvmlInit()
-    _NVML_AVAILABLE = True
-except Exception:
-    _NVML_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -61,16 +55,7 @@ except Exception:
 #
 # On multi-GPU kernels (e.g. Kaggle's 2× T4) the model is typically pinned to
 # a single device, so all measurements must target *that* device rather than
-# a hardcoded index 0. Two distinct index spaces are involved:
-#
-#   * the *torch* index   — what torch.cuda / a model's parameters live on,
-#                           filtered and renumbered by CUDA_VISIBLE_DEVICES;
-#   * the *NVML* index    — the physical device order pynvml addresses.
-#
-# These coincide only when CUDA_VISIBLE_DEVICES is unset and the CUDA/NVML
-# orderings match. We therefore resolve the torch device first, then map it to
-# the matching NVML handle by UUID (robust to any reordering), falling back to
-# a CUDA_VISIBLE_DEVICES translation and finally to the raw index.
+# a hardcoded index 0.
 
 DeviceLike = Union[int, str, "torch.device", None]
 
@@ -91,43 +76,6 @@ def _resolve_torch_index(device: DeviceLike = None) -> Optional[int]:
         idx = torch.device(device).index
         return idx if idx is not None else torch.cuda.current_device()
     return int(device)
-
-
-def _nvml_handle_for_torch_index(torch_index: int):
-    """Map a torch device index to the matching NVML device handle.
-
-    Prefers exact UUID matching (correct regardless of CUDA/NVML ordering or
-    CUDA_VISIBLE_DEVICES). Falls back to translating through
-    CUDA_VISIBLE_DEVICES, then to the raw index. Returns ``None`` on failure.
-    """
-    # 1) UUID match — authoritative.
-    try:
-        torch_uuid = str(torch.cuda.get_device_properties(torch_index).uuid).replace("GPU-", "")
-        for i in range(pynvml.nvmlDeviceGetCount()):
-            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-            nvml_uuid = pynvml.nvmlDeviceGetUUID(handle)
-            if isinstance(nvml_uuid, bytes):
-                nvml_uuid = nvml_uuid.decode()
-            if nvml_uuid.replace("GPU-", "") == torch_uuid:
-                return handle
-    except Exception:
-        pass
-
-    # 2) Translate the torch index through CUDA_VISIBLE_DEVICES.
-    physical_index = torch_index
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if cvd:
-        visible = [x.strip() for x in cvd.split(",") if x.strip() != ""]
-        try:
-            physical_index = int(visible[torch_index])
-        except (IndexError, ValueError):
-            physical_index = torch_index
-
-    # 3) Raw index lookup.
-    try:
-        return pynvml.nvmlDeviceGetHandleByIndex(physical_index)
-    except Exception:
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -212,175 +160,12 @@ def gpu_peak_mem_mb(device: DeviceLike = None) -> float:
 
 
 # ---------------------------------------------------------------------------
-# GPU utilization sampler  (pynvml background thread)
-# ---------------------------------------------------------------------------
-
-class GpuUtilSampler:
-    """Background daemon thread that polls GPU utilization via pynvml.
-
-    Polls nvmlDeviceGetUtilizationRates every *interval_s* seconds
-    (floored at 100 ms to keep GIL contention negligible).
-    Call start() before the code block to measure and stop()
-    after it to retrieve aggregated stats.
-
-    Graceful degradation
-    --------------------
-    - No CUDA: sampler is a no-op; stop() returns all-zero dict.
-    - CUDA present but pynvml missing: a one-time RuntimeWarning is
-      issued and the sampler is a no-op (peak VRAM is still tracked).
-    - pynvml error mid-run: sampling stops silently; samples collected
-      so far are used for aggregation.
-
-    Notes
-    -----
-    - Utilization is **whole-device** — not process-isolated. On shared
-      Colab / Kaggle GPUs another tenant could theoretically inflate
-      the reading, though in practice you are alone on the GPU.
-    - On multi-GPU kernels (e.g. Kaggle's 2× T4) only the device the
-      model is loaded on is sampled. ``device`` defaults to the active
-      torch device and is mapped to the correct NVML handle by UUID, so
-      the idle second GPU is never measured by mistake.
-    - Very short execution blocks (e.g. a fast baseline) yield fewer
-      samples, making gpu_util_mean noisier for that block.
-    - Absolute latencies in notebooks using this sampler include a
-      sub-percent overhead.
-    """
-
-    def __init__(self, interval_s: float = 0.1, device: DeviceLike = None) -> None:
-        self._interval_s = max(interval_s, 0.1)   # floor at 100 ms
-        self._device = device                     # resolved at start()
-        self._samples: list[tuple[float, float]] = []  # (gpu_util%, mem_util%)
-        self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-
-    # ---- public interface ----
-
-    def start(self) -> "GpuUtilSampler":
-        """Start the background polling thread."""
-        self._samples = []
-        self._stop_event.clear()
-        if torch.cuda.is_available():
-            if _NVML_AVAILABLE:
-                self._thread = threading.Thread(target=self._poll, daemon=True)
-                self._thread.start()
-            else:
-                warnings.warn(
-                    "CUDA GPU detected but pynvml is not available. "
-                    "Install nvidia-ml-py for per-step GPU utilization sampling. "
-                    "Peak VRAM is still tracked via torch.cuda.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-        return self
-
-    def stop(self) -> dict[str, float]:
-        """Stop the sampler and return aggregated utilization stats.
-
-        Returns
-        -------
-        dict with keys:
-            gpu_util_mean   — mean GPU compute utilization (%)
-            gpu_util_max    — peak GPU compute utilization (%)
-            mem_util_mean   — mean GPU memory bandwidth utilization (%)
-            vram_used_mean_mb — mean absolute VRAM in use (MB)
-            vram_used_max_mb  — max absolute VRAM in use (MB)
-            temp_mean_c     — mean GPU temperature (°C)
-            temp_max_c      — max GPU temperature (°C)
-            sm_clock_mean_mhz — mean SM clock frequency (MHz)
-            n_samples       — number of samples collected
-        All numeric values are 0.0 / 0 when pynvml is unavailable.
-        """
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-
-        if not self._samples:
-            return {
-                "gpu_util_mean":    0.0,
-                "gpu_util_max":     0.0,
-                "mem_util_mean":    0.0,
-                "vram_used_mean_mb": 0.0,
-                "vram_used_max_mb":  0.0,
-                "temp_mean_c":      0.0,
-                "temp_max_c":       0.0,
-                "sm_clock_mean_mhz": 0.0,
-                "n_samples":        0,
-            }
-
-        gpu_vals   = [s[0] for s in self._samples]
-        mem_vals   = [s[1] for s in self._samples]
-        vram_vals  = [s[2] for s in self._samples]
-        temp_vals  = [s[3] for s in self._samples]
-        clock_vals = [s[4] for s in self._samples]
-        n = len(self._samples)
-        return {
-            "gpu_util_mean":    round(sum(gpu_vals)   / n, 2),
-            "gpu_util_max":     round(max(gpu_vals),     2),
-            "mem_util_mean":    round(sum(mem_vals)   / n, 2),
-            "vram_used_mean_mb": round(sum(vram_vals)  / n, 2),
-            "vram_used_max_mb":  round(max(vram_vals),   2),
-            "temp_mean_c":      round(sum(temp_vals)  / n, 2),
-            "temp_max_c":       round(max(temp_vals),    2),
-            "sm_clock_mean_mhz": round(sum(clock_vals) / n, 2),
-            "n_samples":        n,
-        }
-
-    # ---- context manager support ----
-
-    def __enter__(self) -> "GpuUtilSampler":
-        return self.start()
-
-    def __exit__(self, *_: Any) -> None:
-        self.stop()
-
-    # ---- internal ----
-
-    def _poll(self) -> None:
-        try:
-            torch_index = _resolve_torch_index(self._device)
-            handle = _nvml_handle_for_torch_index(torch_index)
-            if handle is None:
-                return  # could not resolve the device — degrade to no samples
-            while not self._stop_event.is_set():
-                rates = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                # Absolute VRAM in use (bytes → MB)
-                try:
-                    mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                    vram_mb = float(mem_info.used) / 1e6
-                except Exception:
-                    vram_mb = 0.0
-                # GPU temperature (°C)
-                try:
-                    temp_c = float(pynvml.nvmlDeviceGetTemperature(
-                        handle, pynvml.NVML_TEMPERATURE_GPU
-                    ))
-                except Exception:
-                    temp_c = 0.0
-                # SM clock frequency (MHz)
-                try:
-                    sm_clock = float(pynvml.nvmlDeviceGetClockInfo(
-                        handle, pynvml.NVML_CLOCK_SM
-                    ))
-                except Exception:
-                    sm_clock = 0.0
-                self._samples.append((
-                    float(rates.gpu),
-                    float(rates.memory),
-                    vram_mb,
-                    temp_c,
-                    sm_clock,
-                ))
-                time.sleep(self._interval_s)
-        except Exception:
-            pass  # degrade silently; samples collected so far are preserved
-
-
-# ---------------------------------------------------------------------------
 # Throughput
 # ---------------------------------------------------------------------------
 
-def tokens_per_second(output_tokens: int, elapsed_s: float) -> float:
+def tokens_per_second(
+    output_tokens: int, elapsed_s: float, *, round_dp: Optional[int] = 4
+) -> float:
     """Compute generation throughput in output tokens per second.
 
     Measures end-to-end generation throughput (prefill + decode).
@@ -394,6 +179,11 @@ def tokens_per_second(output_tokens: int, elapsed_s: float) -> float:
         Number of tokens generated.
     elapsed_s : float
         Wall-clock seconds of the full ``chain.invoke`` call.
+    round_dp : int | None
+        Decimal places to round to (default ``4``). Pass ``None`` for the
+        unrounded ratio — used by ``utils.voting.compose_subset_metrics``,
+        which recomputes throughput from *summed* subset totals rather than
+        a single sample and should not carry this module's own rounding.
 
     Returns
     -------
@@ -402,4 +192,61 @@ def tokens_per_second(output_tokens: int, elapsed_s: float) -> float:
     """
     if elapsed_s < 1e-9:
         return 0.0
-    return round(output_tokens / elapsed_s, 4)
+    rate = output_tokens / elapsed_s
+    return round(rate, round_dp) if round_dp is not None else rate
+
+
+# ---------------------------------------------------------------------------
+# Instrumented invoke  (composes the primitives above around one chain.invoke)
+# ---------------------------------------------------------------------------
+
+def timed_invoke(chain: Any, prompt_template: Any, tokenizer: Any, inputs: dict) -> dict:
+    """Render, time, and measure a single ``chain.invoke`` call.
+
+    Centralizes the render -> count input tokens -> reset peak VRAM -> time ->
+    count output tokens -> read peak VRAM sequence that every notebook's
+    generation step needs. v1.x/v2.x notebooks are already executed and keep
+    their own hand-inlined copy of this sequence (``run_agent_step``) for
+    reproducibility; v3.x+ notebooks call this helper instead.
+
+    Parameters
+    ----------
+    chain : Runnable
+        A LangChain ``PromptTemplate | llm | OutputParser`` chain.
+    prompt_template : PromptTemplate
+        Used only to render the prompt for token counting — ``chain`` itself
+        is still invoked with ``inputs`` directly.
+    tokenizer : PreTrainedTokenizer
+        The model's own tokenizer, for consistent token counting.
+    inputs : dict
+        Variable bindings passed to both ``render_prompt`` and ``chain.invoke``.
+
+    Returns
+    -------
+    dict with keys:
+        output_text    (str)   — the chain's output
+        latency_s      (float) — wall-clock seconds of the invoke call
+        input_tokens   (int)
+        output_tokens  (int)
+        total_tokens   (int)
+        gpu_peak_mb    (float)
+    """
+    prompt_str = render_prompt(prompt_template, inputs)
+    input_tokens = count_tokens(tokenizer, prompt_str)
+
+    reset_gpu_peak()
+    t0 = time.perf_counter()
+    output_text = chain.invoke(inputs)
+    elapsed = time.perf_counter() - t0
+
+    output_tokens = count_tokens(tokenizer, output_text)
+    peak_vram_mb = gpu_peak_mem_mb()
+
+    return {
+        "output_text": output_text,
+        "latency_s": elapsed,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "gpu_peak_mb": peak_vram_mb,
+    }

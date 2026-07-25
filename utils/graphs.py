@@ -1,0 +1,232 @@
+"""
+graphs.py — LangGraph orchestration templates for the L1 protocols.
+
+One graph template per protocol, per CLAUDE.md. This module currently
+provides the Majority Voting template (:func:`build_majority_voting_graph`),
+which Self-Consistency uses in two modes:
+
+1. **Generation pass** (live, k=1) — one live ``AgentSpec`` per seed; the
+   live ``generate`` closure appends the full generation record used for
+   the persisted artifact (see ``utils.persistence``).
+2. **Aggregation pass** (replay) — one compiled graph per subset of the SC
+   ladder, each with one replay spec per generator in that subset; the
+   ``aggregate`` node groups and votes over that subset's own samples (see
+   ``utils.voting.run_self_consistency``).
+
+Majority Voting later calls the identical builder with replay specs sourced
+from *downloaded* artifacts — the same code path SC's aggregation pass
+exercises, not a parallel implementation. The BoN-MAV graph is a separate
+template (see docs/L1_MAJ_BONMAV_PLAN.md) since its topology (candidates +
+verifiers + selection) differs from a plain vote.
+
+The majority vote is produced **by the graph protocol itself** — the
+``aggregate`` node groups its own fanned-in samples via
+``utils.voting.group_generations`` and votes via ``utils.voting.majority_vote``
+— so every reported SC number is a number the LangGraph protocol actually
+computed, not a Python loop that merely reuses its data structures.
+
+The ground-truth answer never enters graph state — correctness is always
+computed by the caller after ``invoke()`` returns, so leakage into the
+protocol logic is impossible by construction.
+
+Connection to the project WPs
+-----------------------------
+* WP2-T4: the LangGraph implementation of the L1 majority-voting protocol,
+  homogeneous (SC) or heterogeneous (MAJ) via the same ``AgentSpec`` list.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Annotated, Callable, Literal, Mapping, Optional, Sequence, TypedDict
+import operator
+
+from langgraph.graph import END, START, StateGraph  # type: ignore
+from langgraph.graph.state import CompiledStateGraph  # type: ignore
+
+from utils.voting import (
+    BenchmarkSpec, VoteResult, compose_subset_metrics, group_generations, majority_vote,
+)
+
+
+class AgentSample(TypedDict):
+    agent_id: str
+    model_key: str
+    model_id: str
+    source: Literal["live", "replay"]
+    gen_id: int
+    seed: Optional[int]
+    answer: str
+    parsed_output: Optional[str]
+    latency_s: float
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    gpu_peak_mb: float
+
+
+class VotingState(TypedDict):
+    task: str
+    problem_id: int
+    dataset: str
+    samples: Annotated[list[AgentSample], operator.add]
+    vote: Optional[VoteResult]
+    metrics: Optional[dict]
+
+
+@dataclass(frozen=True)
+class AgentSpec:
+    """One graph node's identity and data source.
+
+    ``mode="live"`` calls ``generate(task, seed)`` — an instrumented closure
+    built in the notebook, wrapping ``build_hf_langchain_llm`` plus the
+    token/latency/VRAM measurement helpers in ``utils.instrumentation``.
+    ``mode="replay"`` looks up ``store[(problem_id, gen_id)]`` — a
+    ``utils.persistence.build_generation_store`` output, either the
+    in-session dict (SC's own aggregation pass) or a downloaded artifact
+    (Majority Voting).
+
+    ``model_key`` is the registry slug (``utils.registry``) carried onto
+    every emitted ``AgentSample`` — the model's persisted identity.
+    ``model_id`` is the HF repo id, needed operationally by ``"live"`` mode
+    to actually load the model; it is not itself persisted per-record (see
+    ``utils.persistence``'s primary-key design), only recovered from
+    ``model_key`` via the registry at notebook config time.
+    """
+
+    agent_id: str
+    model_key: str
+    model_id: str
+    mode: Literal["live", "replay"]
+    generate: Optional[Callable[[str, Optional[int]], AgentSample]] = None
+    seed: Optional[int] = None
+    store: Optional[Mapping[tuple[int, int], dict]] = None
+    gen_id: int = 0
+
+    def __post_init__(self) -> None:
+        if self.mode == "live" and self.generate is None:
+            raise ValueError(f"AgentSpec {self.agent_id!r}: mode='live' requires `generate`")
+        if self.mode == "replay" and self.store is None:
+            raise ValueError(f"AgentSpec {self.agent_id!r}: mode='replay' requires `store`")
+
+
+def _make_gen_node(spec: AgentSpec) -> Callable[[VotingState], dict]:
+    if spec.mode == "live":
+        generate = spec.generate
+        seed = spec.seed
+
+        def live_node(state: VotingState) -> dict:
+            # generate() is the notebook's own closure (built per AgentSpec,
+            # already bound to this spec's agent_id/model_key/model_id) — it
+            # returns a complete AgentSample, so nothing is overridden here.
+            sample = generate(state["task"], seed)  # type: ignore[misc]
+            return {"samples": [sample]}
+
+        return live_node
+
+    store = spec.store
+    gen_id = spec.gen_id
+    agent_id = spec.agent_id
+    model_key = spec.model_key
+    model_id = spec.model_id
+
+    def replay_node(state: VotingState) -> dict:
+        record = store[(state["problem_id"], gen_id)]  # type: ignore[index]
+        sample: AgentSample = {
+            "agent_id": agent_id,
+            "model_key": model_key,
+            "model_id": model_id,
+            "source": "replay",
+            "gen_id": gen_id,
+            "seed": record.get("seed"),
+            "answer": record["answer"],
+            "parsed_output": record.get("parsed_output"),
+            "latency_s": record["latency_s"],
+            "input_tokens": record["input_tokens"],
+            "output_tokens": record["output_tokens"],
+            "total_tokens": record["total_tokens"],
+            "gpu_peak_mb": record["gpu_peak_mb"],
+        }
+        return {"samples": [sample]}
+
+    return replay_node
+
+
+def build_majority_voting_graph(
+    agent_specs: Sequence[AgentSpec],
+    benchmark_spec: BenchmarkSpec,
+    *,
+    rng,
+) -> CompiledStateGraph:
+    """Build the Majority Voting graph: ``START -> gen_* -> aggregate -> END``.
+
+    One ``<agent_id>`` node per spec (live or replay); LangGraph executes
+    same-superstep nodes sequentially in-process under a synchronous
+    ``.invoke()``, so only one model is ever resident in VRAM and
+    ``batch_size=1`` holds. ``aggregate`` fans in every sample (via the
+    ``samples`` reducer) and groups + votes over them itself, via
+    :func:`utils.voting.group_generations` and :func:`utils.voting.majority_vote`
+    — the majority vote is produced by the protocol, not by a caller that
+    merely reads the fanned-in samples back out. It also composes the
+    subset's metrics via :func:`utils.voting.compose_subset_metrics`.
+
+    Parameters
+    ----------
+    agent_specs : sequence of AgentSpec
+        One per graph node. Order determines node names and, since sample
+        fan-in follows node-addition order under a synchronous ``.invoke()``,
+        the index a vote's ``winner_idx`` refers to.
+    benchmark_spec : BenchmarkSpec
+        The benchmark's extraction/equivalence rule (e.g.
+        ``utils.voting.MATH500_SPEC``), used to group this graph's own
+        fanned-in samples.
+    rng : random.Random
+        Shared across every vote in the run — see
+        :func:`utils.voting.majority_vote` and
+        :func:`utils.voting.run_self_consistency`, which construct one
+        instance and thread it through every graph they compile.
+
+    Returns
+    -------
+    CompiledStateGraph
+        Invoke once per problem with
+        ``{"task": ..., "problem_id": ..., "dataset": ...,
+        "samples": [], "vote": None, "metrics": None}``.
+    """
+    if not agent_specs:
+        raise ValueError("build_majority_voting_graph requires at least one AgentSpec")
+
+    graph = StateGraph(VotingState)
+
+    node_names = []
+    seen_agent_ids: set[str] = set()
+    for agent_spec in agent_specs:
+        if agent_spec.agent_id == "aggregate":
+            raise ValueError("agent_id 'aggregate' is reserved for the vote-aggregation node")
+        if agent_spec.agent_id in seen_agent_ids:
+            raise ValueError(
+                f"Duplicate agent_id {agent_spec.agent_id!r} — LangGraph node names "
+                "must be unique; give each AgentSpec a distinct agent_id"
+            )
+        seen_agent_ids.add(agent_spec.agent_id)
+        node_name = agent_spec.agent_id
+        node_names.append(node_name)
+        graph.add_node(node_name, _make_gen_node(agent_spec))
+        graph.add_edge(START, node_name)
+
+    def aggregate(state: VotingState) -> dict:
+        samples = state["samples"]
+        answers = [sample["answer"] for sample in samples]
+        labels, predictions = group_generations(answers, benchmark_spec)
+        vote = majority_vote(labels, rng=rng)
+        if vote["winner_idx"] is not None:
+            vote["winner_pred"] = predictions[vote["winner_idx"]]
+        metrics = compose_subset_metrics(samples)
+        return {"vote": vote, "metrics": metrics}
+
+    graph.add_node("aggregate", aggregate)
+    for node_name in node_names:
+        graph.add_edge(node_name, "aggregate")
+    graph.add_edge("aggregate", END)
+
+    return graph.compile()
