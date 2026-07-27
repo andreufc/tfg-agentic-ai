@@ -181,9 +181,9 @@ def tokens_per_second(
         Wall-clock seconds of the full ``chain.invoke`` call.
     round_dp : int | None
         Decimal places to round to (default ``4``). Pass ``None`` for the
-        unrounded ratio — used by ``utils.voting.compose_subset_metrics``,
-        which recomputes throughput from *summed* subset totals rather than
-        a single sample and should not carry this module's own rounding.
+        unrounded ratio — used by ``utils.voting.compose_generation_metrics``,
+        which recomputes throughput from *summed* or *per-call* totals rather
+        than a single sample and should not carry this module's own rounding.
 
     Returns
     -------

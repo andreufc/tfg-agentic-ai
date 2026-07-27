@@ -412,27 +412,78 @@ def run_self_consistency(
 # Metric composition
 # ---------------------------------------------------------------------------
 
-def compose_subset_metrics(gen_metrics_subset: Sequence[Mapping[str, float]]) -> dict:
-    """As-if-sequential compute composition for a subset of generators.
+def compose_generation_metrics(
+    calls: Sequence[Mapping[str, Any]],
+    *,
+    tokens_per_s_rule: Literal["recomputed", "mean"] = "recomputed",
+) -> dict:
+    """Compute composition shared by every L1 protocol: SC, MAJ, BoN-MAV.
 
-    Latency and token counts (input/output/total) are summed across the
-    subset's generators — the honest cost of running them one after another
-    on a single GPU; ``gpu_peak_mb`` is the max (the single resident model's
-    peak, not additive); throughput is recomputed from the summed values
-    rather than averaged.
+    Each call is a persisted generation record, an ``AgentSample`` (MAJ
+    candidates), or an ``Approval`` (BoN-MAV verifier calls) — all three
+    carry ``model_key`` plus the same metric fields, so one function serves
+    every protocol. Latency and token counts (input/output/total) always sum
+    across every call — the honest total wall time / token spend, whether
+    the calls ran sequentially (SC, one resident model) or as a heterogeneous
+    ensemble (MAJ/BoN-MAV, several models resident at once).
+
+    ``gpu_peak_mb`` is the **sum over distinct ``model_key``** of that
+    model's max per-call peak — a model occupying two slots (e.g. MAJ's E4/
+    E5) is loaded once, hence max-within-model before the sum. This is a
+    strict generalization of the old single-model rule, not a different one:
+    when every call shares one ``model_key`` (SC, and BoN-MAV's E6/E7
+    self-improvement runs), "sum over distinct model_key" has exactly one
+    term and reduces to a plain max.
+
+    ``tokens_per_s_rule`` selects the one axis that genuinely differs by
+    protocol, since the two aggregation stories mean different things:
+
+    * ``"recomputed"`` (default) — ``Σoutput_tokens / Σlatency_s``, the
+      *sustained* rate of one resident model working through several calls
+      in sequence (SC's own story: same model, one generator after another).
+    * ``"mean"`` — the mean of each call's own rate. For a heterogeneous
+      ensemble (MAJ/BoN-MAV) there is no single shared per-token cost to
+      average over, so summing totals would let one slow model drag down a
+      fast one's own rate; the calls' rates are averaged instead.
+
+    Caveat: the per-call ``gpu_peak_mb`` values summed into the VRAM rule
+    above must each have been measured with a *single* model resident (see
+    ``utils.instrumentation.reset_gpu_peak``/``gpu_peak_mem_mb``) — that
+    single-residency is exactly what makes them summable. Applying this same
+    reconstruction to peaks already measured while several models are
+    co-resident would over-count.
+
+    Raises
+    ------
+    KeyError
+        If any call is missing ``model_key`` or one of the metric fields.
+    ValueError
+        If ``calls`` is empty.
     """
-    if not gen_metrics_subset:
-        raise ValueError("compose_subset_metrics requires at least one generator's metrics")
+    if not calls:
+        raise ValueError("compose_generation_metrics requires at least one call")
 
-    latency_s = sum(m["latency_s"] for m in gen_metrics_subset)
-    input_tokens = sum(m["input_tokens"] for m in gen_metrics_subset)
-    output_tokens = sum(m["output_tokens"] for m in gen_metrics_subset)
-    total_tokens = sum(m["total_tokens"] for m in gen_metrics_subset)
-    gpu_peak_mb = max(m["gpu_peak_mb"] for m in gen_metrics_subset)
-    # Unrounded — this is a composed value from summed subset totals, not a
-    # single logged sample, so it should not carry tokens_per_second's own
-    # display rounding (see utils.instrumentation.tokens_per_second).
-    tokens_per_s = tokens_per_second(output_tokens, latency_s, round_dp=None)
+    latency_s = sum(call["latency_s"] for call in calls)
+    input_tokens = sum(call["input_tokens"] for call in calls)
+    output_tokens = sum(call["output_tokens"] for call in calls)
+    total_tokens = sum(call["total_tokens"] for call in calls)
+
+    peak_by_model: dict[str, float] = {}
+    for call in calls:
+        model_key = call["model_key"]
+        peak_by_model[model_key] = max(peak_by_model.get(model_key, 0.0), call["gpu_peak_mb"])
+    gpu_peak_mb = sum(peak_by_model.values())
+
+    if tokens_per_s_rule == "recomputed":
+        # Unrounded — this is a composed value from summed totals, not a
+        # single logged sample, so it should not carry tokens_per_second's
+        # own display rounding (see utils.instrumentation.tokens_per_second).
+        tokens_per_s = tokens_per_second(output_tokens, latency_s, round_dp=None)
+    elif tokens_per_s_rule == "mean":
+        rates = [tokens_per_second(call["output_tokens"], call["latency_s"], round_dp=None) for call in calls]
+        tokens_per_s = sum(rates) / len(rates)
+    else:
+        raise ValueError(f"Unknown tokens_per_s_rule {tokens_per_s_rule!r}; expected 'recomputed' or 'mean'")
 
     return {
         "latency_s": latency_s,

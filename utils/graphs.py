@@ -45,7 +45,7 @@ from langgraph.graph import END, START, StateGraph  # type: ignore
 from langgraph.graph.state import CompiledStateGraph  # type: ignore
 
 from utils.voting import (
-    BenchmarkSpec, VoteResult, compose_subset_metrics, group_generations, majority_vote,
+    BenchmarkSpec, VoteResult, compose_generation_metrics, group_generations, majority_vote,
 )
 
 
@@ -168,7 +168,7 @@ def build_majority_voting_graph(
     :func:`utils.voting.group_generations` and :func:`utils.voting.majority_vote`
     — the majority vote is produced by the protocol, not by a caller that
     merely reads the fanned-in samples back out. It also composes the
-    subset's metrics via :func:`utils.voting.compose_subset_metrics`.
+    subset's metrics via :func:`utils.voting.compose_generation_metrics`.
 
     Parameters
     ----------
@@ -221,12 +221,149 @@ def build_majority_voting_graph(
         vote = majority_vote(labels, rng=rng)
         if vote["winner_idx"] is not None:
             vote["winner_pred"] = predictions[vote["winner_idx"]]
-        metrics = compose_subset_metrics(samples)
+        metrics = compose_generation_metrics(samples)
         return {"vote": vote, "metrics": metrics}
 
     graph.add_node("aggregate", aggregate)
     for node_name in node_names:
         graph.add_edge(node_name, "aggregate")
     graph.add_edge("aggregate", END)
+
+    return graph.compile()
+
+
+# ---------------------------------------------------------------------------
+# BoN-MAV — a separate template: candidates + verifiers + selection, not a
+# plain vote (see docs/L1_MAJ_BONMAV_PLAN.md §3.3).
+# ---------------------------------------------------------------------------
+
+class Approval(TypedDict):
+    candidate_idx: int
+    aspect_id: str
+    verdict: Optional[bool]  # None = unparseable => no approval
+    raw_output: str
+    latency_s: float
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    gpu_peak_mb: float
+    model_key: str  # same shape utils.voting.compose_generation_metrics expects
+
+
+class BonMavState(TypedDict):
+    task: str
+    problem_id: int
+    dataset: str
+    samples: Annotated[list[AgentSample], operator.add]  # the N replayed candidates
+    approvals: Annotated[list[Approval], operator.add]
+    selection: Optional[dict]  # {selected_idx, scores, tie, tie_break_used}
+
+
+def build_bon_mav_graph(
+    candidate_specs: Sequence[AgentSpec],
+    aspect_ids: Sequence[str],
+    verify: Callable[[str, str, str], Approval],
+    select_fn: Callable[..., dict],
+    *,
+    rng,
+) -> CompiledStateGraph:
+    """Build the BoN-MAV graph: ``START -> cand_* -> collect -> verify_* -> select -> END``.
+
+    Reuses ``_make_gen_node``/``AgentSpec`` unmodified for the candidate side
+    — same replay path ``build_majority_voting_graph`` uses, so a candidate
+    ``AgentSample`` is byte-identical whether it came from a MAJ run or a
+    BoN-MAV run replaying the same store. ``collect`` is a barrier node with
+    no state update, purely so every ``verify_<aspect_id>`` node fans out
+    from a state where all candidates have already landed.
+
+    Parameters
+    ----------
+    candidate_specs : sequence of AgentSpec
+        One per candidate (typically ``mode="replay"``, sourced from
+        :func:`utils.ensembles.sample_slots`'s ``rep=0`` draw).
+    aspect_ids : sequence of str
+        One ``verify_<aspect_id>`` node per id (e.g.
+        ``utils.mav.MAV_ASPECT_SUBSETS[dataset][subset_id]``); each node
+        calls ``verify()`` once per fanned-in candidate sample.
+    verify : Callable[[task, candidate_answer, aspect_id], Approval]
+        A live closure over the (single, already-loaded) verifier model —
+        only this model is ever resident in VRAM. The returned ``Approval``
+        need not set ``candidate_idx``/``aspect_id``; the node fills both in
+        regardless, keyed on the fanned-in candidate's position and this
+        node's own aspect.
+    select_fn : Callable[[n_candidates, approvals, candidate_answers], dict]
+        Called as ``select_fn(n_candidates, approvals, candidate_answers,
+        rng=rng)`` — e.g. ``utils.mav.select_bon_candidate`` with its own
+        ``spec``/``rng`` keywords bound via a notebook-level partial/closure
+        (``spec`` is benchmark-specific and not itself part of this
+        template's signature).
+    rng : random.Random
+        Threaded into ``select_fn`` the same way ``build_majority_voting_graph``
+        threads its shared ``rng`` into every vote in a run.
+
+    Returns
+    -------
+    CompiledStateGraph
+        Invoke once per problem with ``{"task": ..., "problem_id": ...,
+        "dataset": ..., "samples": [], "approvals": [], "selection": None}``.
+    """
+    if not candidate_specs:
+        raise ValueError("build_bon_mav_graph requires at least one candidate AgentSpec")
+    if not aspect_ids:
+        raise ValueError("build_bon_mav_graph requires at least one aspect_id")
+
+    graph = StateGraph(BonMavState)
+
+    cand_node_names: list[str] = []
+    seen_agent_ids: set[str] = set()
+    for spec in candidate_specs:
+        if spec.agent_id in ("collect", "select"):
+            raise ValueError(f"agent_id {spec.agent_id!r} is reserved")
+        if spec.agent_id in seen_agent_ids:
+            raise ValueError(
+                f"Duplicate agent_id {spec.agent_id!r} — LangGraph node names "
+                "must be unique; give each AgentSpec a distinct agent_id"
+            )
+        seen_agent_ids.add(spec.agent_id)
+        graph.add_node(spec.agent_id, _make_gen_node(spec))
+        graph.add_edge(START, spec.agent_id)
+        cand_node_names.append(spec.agent_id)
+
+    def collect(state: BonMavState) -> dict:
+        return {}
+
+    graph.add_node("collect", collect)
+    for node_name in cand_node_names:
+        graph.add_edge(node_name, "collect")
+
+    def _make_verify_node(aspect_id: str) -> Callable[[BonMavState], dict]:
+        def verify_node(state: BonMavState) -> dict:
+            approvals: list[Approval] = []
+            for candidate_idx, sample in enumerate(state["samples"]):
+                approval = dict(verify(state["task"], sample["answer"], aspect_id))
+                approval["candidate_idx"] = candidate_idx
+                approval["aspect_id"] = aspect_id
+                approvals.append(approval)  # type: ignore[arg-type]
+            return {"approvals": approvals}
+
+        return verify_node
+
+    verify_node_names: list[str] = []
+    for aspect_id in aspect_ids:
+        node_name = f"verify_{aspect_id}"
+        graph.add_node(node_name, _make_verify_node(aspect_id))
+        graph.add_edge("collect", node_name)
+        verify_node_names.append(node_name)
+
+    def select(state: BonMavState) -> dict:
+        n_candidates = len(state["samples"])
+        candidate_answers = [sample["answer"] for sample in state["samples"]]
+        selection = select_fn(n_candidates, state["approvals"], candidate_answers, rng=rng)
+        return {"selection": selection}
+
+    graph.add_node("select", select)
+    for node_name in verify_node_names:
+        graph.add_edge(node_name, "select")
+    graph.add_edge("select", END)
 
     return graph.compile()
