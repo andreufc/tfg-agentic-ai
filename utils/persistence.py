@@ -15,8 +15,7 @@ gen_id)`` — all four human-readable, all four citable in the thesis via
 model's HF path is persisted per-record: both are recoverable, the first from
 ``(dataset, data_seed, eval_size)`` (already in the manifest — ``problem_id``
 is a position in that seeded subset), the second from ``model_key`` via
-``utils.registry.get_model``. ``task_hash`` is kept purely as an integrity
-checksum, not an identifier — see :func:`hash_task`.
+``utils.registry.get_model``.
 
 Connection to the project WPs
 -----------------------------
@@ -28,7 +27,6 @@ Connection to the project WPs
 
 from __future__ import annotations
 
-import hashlib
 import json
 import tempfile
 from pathlib import Path
@@ -36,7 +34,6 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 import wandb  # type: ignore
 
-SCHEMA_VERSION = 2
 GENERATIONS_ARTIFACT_TYPE = "sc-generations"
 GENERATIONS_FILENAME = "generations.jsonl"
 MANIFEST_FILENAME = "manifest.json"
@@ -46,8 +43,8 @@ MANIFEST_FILENAME = "manifest.json"
 # a test asserts the two can never drift apart.
 RECORD_FIELDS = (
     "dataset", "problem_id", "model_key", "gen_id",
-    "seed", "protocol", "schema_version",
-    "task", "task_hash", "answer", "parsed_output", "correct",
+    "seed", "protocol",
+    "task", "answer", "parsed_output", "correct",
     "latency_s", "input_tokens", "output_tokens", "total_tokens",
     "gpu_peak_mb", "tokens_per_s",
 )
@@ -57,40 +54,23 @@ _TABLE_COLUMNS = [
     "seed", "task", "answer", "parsed_output", "correct",
     "latency_s", "output_tokens", "input_tokens", "total_tokens",
     "gpu_peak_mb", "tokens_per_s",
-    "protocol", "schema_version", "task_hash",
+    "protocol",
 ]
 
 
 class AlignmentError(RuntimeError):
     """Raised when a downloaded generation store doesn't match the locally
     loaded dataset subset (wrong dataset/model_key/data_seed/eval_size, or a
-    task-hash mismatch at some problem index)."""
+    task-text mismatch at some problem index)."""
 
 
-class SchemaVersionError(AlignmentError):
-    """Raised when a manifest's ``schema_version`` doesn't match the
-    ``SCHEMA_VERSION`` this code expects — the record layout may have
-    changed underneath an old artifact."""
+def _normalize_task(text: str) -> str:
+    """Collapse all whitespace runs to a single space.
 
-
-def hash_task(text: str) -> str:
-    """Whitespace-normalized sha256 hash (first 16 hex chars) of a rendered task.
-
-    This is an *integrity checksum*, not an identifier — ``problem_id`` is
-    the identifier (see the module docstring). Its only job is catching
-    content drift between a persisted generation and the locally loaded
-    dataset at the same ``problem_id`` (e.g. a dataset revision bump).
-
-    Whitespace normalization (collapsing all runs of whitespace to a single
-    space) makes the hash robust to formatting differences between how a
-    task is stored vs. rendered, while still catching any genuine content
-    mismatch. Callers must hash the exact string they store as ``task`` —
-    ``make_generation_record`` does this by construction; for MMLU that
-    string includes the rendered answer choices, not just the question stem,
-    so a same-stem/different-choices drift is caught too.
+    Used by :func:`validate_alignment` so a stored ``task`` and a freshly
+    rendered one compare equal despite formatting-only differences.
     """
-    normalized = " ".join(text.split())
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return " ".join(text.split())
 
 
 def make_generation_record(
@@ -111,10 +91,10 @@ def make_generation_record(
 
     ``sample`` is an ``AgentSample`` (see ``utils.graphs``) — the generator's
     own output — from which ``answer``, ``parsed_output`` and the metric
-    fields are pulled. ``task_hash`` is computed from the same ``task``
-    string the record stores, so producer and validator can never diverge
-    (see :func:`hash_task`). ``extra`` carries per-benchmark fields
-    (``subject``, ``level``) not shared across datasets.
+    fields are pulled. ``validate_alignment`` compares the stored ``task``
+    text directly against a fresh render, so producer and validator can
+    never diverge. ``extra`` carries per-benchmark fields (``subject``,
+    ``level``) not shared across datasets.
     """
     record = {
         "dataset": dataset,
@@ -123,9 +103,7 @@ def make_generation_record(
         "gen_id": gen_id,
         "seed": seed,
         "protocol": protocol,
-        "schema_version": SCHEMA_VERSION,
         "task": task,
-        "task_hash": hash_task(task),
         "answer": sample["answer"],
         "parsed_output": sample.get("parsed_output"),
         "correct": correct,
@@ -258,7 +236,6 @@ def load_generations_artifact(
     *,
     run: Optional["wandb.sdk.wandb_run.Run"] = None,
     api: Optional["wandb.Api"] = None,
-    expected_schema_version: Optional[int] = SCHEMA_VERSION,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Download and parse a generations artifact.
 
@@ -275,10 +252,6 @@ def load_generations_artifact(
     api : wandb.Api | None
         If ``run`` is not given, used for a read-only download (no lineage
         recorded). Defaults to a fresh ``wandb.Api()``.
-    expected_schema_version : int | None
-        Raise :class:`SchemaVersionError` if the manifest's
-        ``schema_version`` doesn't match. Pass ``None`` to skip this check
-        (e.g. for forensic inspection of an old artifact).
 
     Returns
     -------
@@ -293,12 +266,6 @@ def load_generations_artifact(
     download_dir = Path(artifact.download())
     records = read_generations_jsonl(download_dir / GENERATIONS_FILENAME)
     manifest = json.loads((download_dir / MANIFEST_FILENAME).read_text(encoding="utf-8"))
-
-    if expected_schema_version is not None and manifest.get("schema_version") != expected_schema_version:
-        raise SchemaVersionError(
-            f"{artifact_ref}: manifest schema_version {manifest.get('schema_version')!r} != "
-            f"expected {expected_schema_version!r}"
-        )
 
     return records, manifest
 
@@ -360,21 +327,19 @@ def validate_alignment(
 
     Checks (in order, raising on the first failure):
 
-    1. The manifest's ``schema_version`` matches ``SCHEMA_VERSION``
-       (:class:`SchemaVersionError`).
-    2. The manifest's ``dataset`` / ``model_key`` match what the caller
+    1. The manifest's ``dataset`` / ``model_key`` match what the caller
        expects.
-    3. The manifest's ``data_seed`` / ``eval_size`` match what the caller
+    2. The manifest's ``data_seed`` / ``eval_size`` match what the caller
        expects (i.e. the producer and consumer used the same seeded subset).
-    4. Every ``(problem_id, gen_id)`` for ``problem_id`` in
+    3. Every ``(problem_id, gen_id)`` for ``problem_id`` in
        ``range(expected_eval_size)`` and ``gen_id`` in
        ``range(n_generators)`` is present in the store.
-    5. Each stored record's ``task_hash`` matches
-       ``hash_task(render_task(dataset[problem_id]))`` — guards against the
-       producer and consumer silently disagreeing on the question ordering
-       or rendering, and against dataset content drift.
+    4. Each stored record's ``task`` text (whitespace-normalized) matches
+       ``render_task(dataset[problem_id])`` — guards against the producer
+       and consumer silently disagreeing on the question ordering or
+       rendering, and against dataset content drift.
 
-    Checks 1-4 raise :class:`AlignmentError`.
+    All checks raise :class:`AlignmentError`.
 
     Parameters
     ----------
@@ -400,11 +365,6 @@ def validate_alignment(
     n_generators : int
         Number of generators (``gen_id`` values) expected per problem.
     """
-    if manifest.get("schema_version") != SCHEMA_VERSION:
-        raise SchemaVersionError(
-            f"manifest schema_version {manifest.get('schema_version')!r} != "
-            f"expected {SCHEMA_VERSION!r}"
-        )
     if manifest.get("dataset") != expected_dataset:
         raise AlignmentError(
             f"manifest dataset {manifest.get('dataset')!r} != "
@@ -427,7 +387,7 @@ def validate_alignment(
         )
 
     for problem_id in range(expected_eval_size):
-        local_hash = hash_task(render_task(dataset[problem_id]))
+        local_task = _normalize_task(render_task(dataset[problem_id]))
         for gen_id in range(n_generators):
             key = (problem_id, gen_id)
             if key not in store:
@@ -435,10 +395,11 @@ def validate_alignment(
                     f"missing generation record for problem_id={problem_id}, gen_id={gen_id}"
                 )
             record = store[key]
-            if record["task_hash"] != local_hash:
+            stored_task = _normalize_task(record["task"])
+            if stored_task != local_task:
                 raise AlignmentError(
-                    f"task hash mismatch at problem_id={problem_id}: "
-                    f"local={local_hash!r} stored={record['task_hash']!r}"
+                    f"task text mismatch at problem_id={problem_id}: "
+                    f"local={local_task!r} stored={stored_task!r}"
                 )
 
 

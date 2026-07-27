@@ -96,11 +96,12 @@ class BenchmarkSpec:
     notebook prompt template's task placeholder — all problem content
     (including, for MMLU, the rendered answer choices), no instruction
     wording. The generation loop stores this same string as the record's
-    ``task`` and hashes it for ``task_hash``; ``validate_alignment`` re-runs
-    the identical callable against the locally loaded dataset. Using one
-    shared function for "what got shown to the model", "what got persisted"
-    and "what gets re-hashed for validation" makes the three provably agree
-    — there is no second, divergent place to describe a benchmark's prompt.
+    ``task``; ``validate_alignment`` re-runs the identical callable against
+    the locally loaded dataset and compares the result directly against
+    that stored ``task``. Using one shared function for "what got shown to
+    the model", "what got persisted" and "what gets re-checked for
+    validation" makes the three provably agree — there is no second,
+    divergent place to describe a benchmark's prompt.
     """
 
     name: str
