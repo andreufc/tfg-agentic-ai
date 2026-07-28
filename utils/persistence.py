@@ -218,12 +218,44 @@ def artifact_ref(artifact: "wandb.Artifact", *, entity: str, project: str) -> st
     ``artifact.wait()``), so ``artifact.version`` is populated. Consumers must
     pin an explicit version (never ``:latest``) so the run config records
     exactly which producer version was used.
+
+    ``Artifact.name`` already reads back as ``collection:vN`` once the artifact
+    is committed (W&B stamps the version into the name at commit time), so the
+    collection is split off before the version is appended — otherwise the ref
+    comes out as ``.../name:vN:vN``, which the backend rejects with "invalid
+    alias. aliases must be specified as collectionName:alias". Splitting also
+    keeps this correct for a not-yet-committed artifact, whose ``name`` is the
+    bare collection.
     """
-    return f"{entity}/{project}/{artifact.name}:{artifact.version}"
+    collection = artifact.name.split(":", 1)[0]
+    return f"{entity}/{project}/{collection}:{artifact.version}"
+
+
+def normalize_artifact_ref(ref: str) -> str:
+    """Collapse a doubly-pinned ``name:vN:vN`` reference back to ``name:vN``.
+
+    Refs produced before :func:`artifact_ref` learned to split the collection
+    off ``Artifact.name`` carry the version twice, and those malformed strings
+    are already recorded in past runs' ``config``/``summary`` (and hand-copied
+    into the MAJ and BoN-MAV notebooks' ``PRODUCER_REFS``). Consumers normalize
+    on the way in so those refs still resolve. Well-formed refs pass through
+    untouched.
+    """
+    prefix, _, name = ref.rpartition("/")
+    collection, sep, alias = name.partition(":")
+    if not sep:
+        return ref
+    # Only a repeated version suffix is collapsed — a legitimate alias never
+    # contains ':', so anything else is left alone for W&B itself to reject.
+    parts = alias.split(":")
+    if len(parts) > 1 and len(set(parts)) == 1:
+        alias = parts[0]
+    normalized = f"{collection}:{alias}"
+    return f"{prefix}/{normalized}" if prefix else normalized
 
 
 def load_generations_artifact(
-    artifact_ref: str,
+    ref: str,
     *,
     run: Optional["wandb.sdk.wandb_run.Run"] = None,
     api: Optional["wandb.Api"] = None,
@@ -232,13 +264,15 @@ def load_generations_artifact(
 
     Parameters
     ----------
-    artifact_ref : str
+    ref : str
         Explicit artifact reference, e.g.
         ``"entity/project/sc-generations-qwen3-1.7b-math500:v4"``. Pin an
         explicit version (not ``:latest``) in every real consumer run so the
-        run config records exactly which producer version was used.
+        run config records exactly which producer version was used. Passed
+        through :func:`normalize_artifact_ref` first, so a doubly-pinned ref
+        recorded by an older run still resolves.
     run : wandb.Run | None
-        If given, uses ``run.use_artifact(artifact_ref)`` so the download is
+        If given, uses ``run.use_artifact(ref)`` so the download is
         recorded as W&B lineage on the consumer run (Claim-to-Evidence).
     api : wandb.Api | None
         If ``run`` is not given, used for a read-only download (no lineage
@@ -248,11 +282,12 @@ def load_generations_artifact(
     -------
     (records, manifest)
     """
+    ref = normalize_artifact_ref(ref)
     if run is not None:
-        artifact = run.use_artifact(artifact_ref)
+        artifact = run.use_artifact(ref)
     else:
         api = api or wandb.Api()
-        artifact = api.artifact(artifact_ref)
+        artifact = api.artifact(ref)
 
     download_dir = Path(artifact.download())
     records = read_generations_jsonl(download_dir / GENERATIONS_FILENAME)
