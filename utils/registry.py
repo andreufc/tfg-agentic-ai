@@ -14,10 +14,10 @@ recorded exactly once, here, and recovered everywhere else via
 
 Connection to the project WPs
 ------------------------------
-* WP2-T4 (L1 multi-agent protocols): the future ``utils/ensembles.py``
-  (Majority Voting / BoN-MAV, see ``docs/L1_MAJ_BONMAV_PLAN.md`` §3.1) imports
-  ``MODELS`` from here rather than redefining it, so run names, artifact names
-  and thesis tables cannot drift between protocols.
+* WP2-T4 (L1 multi-agent protocols): ``utils/ensembles.py``
+  (Majority Voting / BoN-MAV) imports ``MODELS`` from here rather than
+  redefining it, so run names, artifact names and thesis tables cannot
+  drift between protocols.
 """
 
 from __future__ import annotations
@@ -143,7 +143,7 @@ def sc_run_name(model_key: str, dataset: str, k: int, *, suffix: str = "") -> st
     """W&B run name for an SC@k aggregation run."""
     run_name = get_model(model_key)["run_name"]
     _check_dataset(dataset)
-    name = f"l1-sc{k}-{run_name}-{dataset}"
+    name = f"l1-sc@{k}-{run_name}-{dataset}"
     return f"{name}-{suffix}" if suffix else name
 
 
