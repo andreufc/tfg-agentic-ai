@@ -1,11 +1,11 @@
 """
 mav.py — aspect verifiers (AVs), verdict parsing, and BoN-MAV candidate
-selection (docs/L1_MAJ_BONMAV_PLAN.md §3.4).
+selection.
 
-Aspect content is transcribed **verbatim** from docs/VERIFIERS.md, the
-user-authored source of truth — including its typos and inconsistent
-spacing, and its curly ' quote glyph. This is deliberate: the transcription
-must be diffable against the source doc, not a paraphrase. ``<Question>``/
+Aspect content is transcribed **verbatim** from the original verifier
+specification — including its typos and inconsistent spacing, and its
+curly ' quote glyph. This is deliberate: the transcription must stay
+diffable against that source, not a paraphrase. ``<Question>``/
 ``<Solution>`` placeholders become the Python format-string placeholders
 ``{task}``/``{candidate}``, filled in via ``prompt.format(task=..., candidate=...)``.
 
@@ -24,14 +24,10 @@ otherwise 2 ``reasoning`` + 1 ``step_by_step``; MATH-S2/MMLU-S2 are otherwise
 specifies is ``'FINAL VERIFICATION ANSWER: True'`` / ``'...: False'``.
 
 **Transcription trap**: both MMLU subsets' AV1 is titled "General
-correctness, Step-by-step" in docs/VERIFIERS.md, but its instruction text is
+correctness, Step-by-step" in the original spec, but its instruction text is
 byte-identical to the ``direct`` prompt every other subset's AV1 uses. This
 module classifies by instruction text, not title, so it is correctly
 ``strategy="direct"`` here — see ``test_mav.py``'s explicit pin on this.
-
-**User review required**: per docs/L1_MAJ_BONMAV_PLAN.md §9 step 3, the
-transcription below must be reviewed against docs/VERIFIERS.md before any
-BoN-MAV rollout (§3.4/§9).
 
 Connection to the project WPs
 ------------------------------
@@ -84,7 +80,7 @@ def _prompt(preamble: str, instructions: str) -> str:
 
 # ---------------------------------------------------------------------------
 # Instruction text, transcribed verbatim (including source typos) from
-# docs/VERIFIERS.md
+# the original verifier specification
 # ---------------------------------------------------------------------------
 
 _DIRECT_INSTRUCTIONS = (
@@ -191,9 +187,9 @@ MAV_ASPECTS: dict[str, dict[str, dict]] = {
         "math-s2-av4": _aspect(_MATH_PREAMBLE, _MATH_STEP_BY_STEP_MATH_CORRECTNESS_INSTRUCTIONS, "step_by_step"),
     },
     "mmlu": {
-        # AV1's docs/VERIFIERS.md title is "General correctness, Step-by-step"
-        # in BOTH MMLU subsets, but its instruction text is byte-identical to
-        # the direct/short-answer prompt every other subset's AV1 uses — this
+        # AV1 is titled "General correctness, Step-by-step" in BOTH MMLU
+        # subsets, but its instruction text is byte-identical to the
+        # direct/short-answer prompt every other subset's AV1 uses — this
         # module classifies by instruction text, not title (see module
         # docstring), so it is correctly "direct" here.
         "mmlu-s1-av1": _aspect(_MMLU_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct"),
@@ -237,7 +233,7 @@ def parse_verdict(text: str) -> Optional[bool]:
     Strips a leading ``<think>...</think>`` block, then takes the **last**
     ``FINAL VERIFICATION ANSWER:\\s*(True|False)`` marker (case-insensitive,
     tolerant of straight ``'`` or curly ``'``/``‘`` quoting around
-    the value — docs/VERIFIERS.md's own prompts use curly quotes, but a
+    the value — the source prompts use curly quotes, but a
     smaller verifier may echo straight quotes instead). Falls back to the
     last standalone ``True``/``False``/``Yes``/``No`` if the exact marker is
     missing (a smaller verifier may drift off-format). Anything else, or
@@ -334,9 +330,8 @@ def approval_diagnostics(approvals: Sequence[Mapping[str, Any]], n_candidates: i
     ``approval_rate`` is the fraction of an aspect's approvals with
     ``verdict is True`` (unparseable verdicts count as non-approvals, same
     scoring rule as :func:`select_bon_candidate`) — aspects approving nearly
-    every candidate (>95%) are a sycophancy flag per
-    docs/L1_MAJ_BONMAV_PLAN.md §10. ``parse_rate`` is the fraction with
-    ``verdict is not None``.
+    every candidate (>95%) are a sycophancy flag. ``parse_rate`` is the
+    fraction with ``verdict is not None``.
     """
     by_aspect: dict[str, list[Mapping[str, Any]]] = {}
     for approval in approvals:

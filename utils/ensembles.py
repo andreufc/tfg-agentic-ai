@@ -1,6 +1,6 @@
 """
 ensembles.py — ensemble roster and slot sampling for Majority Voting (MAJ)
-and BoN-MAV, shared by both protocols (docs/L1_MAJ_BONMAV_PLAN.md §2.2/§3.1).
+and BoN-MAV, shared by both protocols.
 
 Imports ``MODELS``/``get_model`` from ``utils.registry`` rather than
 redefining model identity — this module is only about *combining* registered
@@ -45,10 +45,10 @@ class Ensemble:
             get_model(model_key)  # validates every slot is a real MODELS key
 
 
-# Per docs/L1_MAJ_BONMAV_PLAN.md §1.1. E1-E5 are the MAJ ensembles; E2/E6/E7
+# E1-E5 are the MAJ ensembles; E2/E6/E7
 # are BoN-MAV's candidate ensembles (E2 shared with MAJ for the paired
 # protocol-vs-protocol comparison, E6/E7 are the self-improvement
-# same-model-x3 ensembles added in rev. 4).
+# same-model-x3 ensembles).
 E1 = Ensemble("E1", ("qwen3-1.7b", "ministral-3-3b", "phi-4-mini"), "E1 (Qwen3-1.7B + Ministral-3-3B + Phi-4-mini)")
 E2 = Ensemble("E2", ("qwen3-4b", "ministral-3-3b", "phi-4-mini"), "E2 (Qwen3-4B + Ministral-3-3B + Phi-4-mini)")
 E3 = Ensemble("E3", ("qwen3-1.7b", "qwen3-4b", "phi-4-mini"), "E3 (Qwen3-1.7B + Qwen3-4B + Phi-4-mini)")

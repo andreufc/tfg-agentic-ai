@@ -38,9 +38,8 @@ GENERATIONS_ARTIFACT_TYPE = "sc-generations"
 GENERATIONS_FILENAME = "generations.jsonl"
 MANIFEST_FILENAME = "manifest.json"
 
-# The full field set of a generation record. `_TABLE_COLUMNS` (see
-# `generation_table_rows`) is a reordering of this set (PK columns first) —
-# a test asserts the two can never drift apart.
+# The full field set of a generation record, as produced by
+# `make_generation_record` — a test asserts the two never drift apart.
 RECORD_FIELDS = (
     "dataset", "problem_id", "model_key", "gen_id",
     "seed", "protocol",
@@ -48,14 +47,6 @@ RECORD_FIELDS = (
     "latency_s", "input_tokens", "output_tokens", "total_tokens",
     "gpu_peak_mb", "tokens_per_s",
 )
-
-_TABLE_COLUMNS = [
-    "dataset", "problem_id", "model_key", "gen_id",
-    "seed", "task", "answer", "parsed_output", "correct",
-    "latency_s", "output_tokens", "input_tokens", "total_tokens",
-    "gpu_peak_mb", "tokens_per_s",
-    "protocol",
-]
 
 
 class AlignmentError(RuntimeError):
@@ -403,20 +394,47 @@ def validate_alignment(
                 )
 
 
-def generation_table_rows(
-    records: list[dict], *, extra_columns: Sequence[str] = ()
-) -> tuple[list[str], list[list[Any]]]:
-    """Build ``(columns, rows)`` for the W&B generator table.
+def fetch_and_validate_stores(
+    model_keys: Sequence[str],
+    ref_for: Callable[[str], str],
+    *,
+    run: "wandb.sdk.wandb_run.Run",
+    dataset_sample: Sequence[Any],
+    render_task: Callable[[Any], str],
+    expected_dataset: str,
+    expected_data_seed: int,
+    expected_eval_size: int,
+    n_generators: int,
+) -> tuple[dict[str, dict], dict[str, int]]:
+    """Download + validate one generations store per model_key, all lineage-tracked on ``run``.
 
-    Column order leads with the primary key (``dataset, problem_id,
-    model_key, gen_id``) so the table can be joined back to
-    ``build_generation_store``'s key by inspection.
+    The shared reuse pattern behind MAJ's/BoN-MAV's/the smoke test's per-run
+    candidate loading: each ``model_key``'s producer artifact is fetched via
+    :func:`load_generations_artifact` with a real, active ``run`` (so W&B
+    records real producer->consumer lineage on *that* run, per the
+    Claim-to-Evidence requirement), then validated against the locally
+    loaded ``dataset_sample`` via :func:`validate_alignment`.
 
-    ``extra_columns`` appends per-benchmark fields not shared across
-    datasets (``subject``, ``level``) — passed explicitly rather than baked
-    into ``_TABLE_COLUMNS`` so, e.g., MMLU rows don't get an all-``None``
-    ``level`` column.
+    Returns
+    -------
+    (stores, alignment_counts)
+        ``stores[model_key]`` is the ``(problem_id, gen_id) -> record`` dict
+        from :func:`build_generation_store`; ``alignment_counts[model_key]``
+        is ``len(records)``, meant for stamping onto ``run.config`` after the
+        fact (config keys derived from this can't be known before ``run`` —
+        and therefore this data — exists).
     """
-    columns = list(_TABLE_COLUMNS) + list(extra_columns)
-    rows = [[record.get(col) for col in columns] for record in records]
-    return columns, rows
+    stores: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    for model_key in model_keys:
+        records, manifest = load_generations_artifact(ref_for(model_key), run=run)
+        store = build_generation_store(records)
+        validate_alignment(
+            manifest, store, dataset_sample, render_task=render_task,
+            expected_dataset=expected_dataset, expected_model_key=model_key,
+            expected_data_seed=expected_data_seed, expected_eval_size=expected_eval_size,
+            n_generators=n_generators,
+        )
+        stores[model_key] = store
+        counts[model_key] = len(records)
+    return stores, counts

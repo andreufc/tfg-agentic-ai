@@ -1,7 +1,7 @@
 """
 graphs.py — LangGraph orchestration templates for the L1 protocols.
 
-One graph template per protocol, per CLAUDE.md. This module currently
+One graph template per protocol. This module currently
 provides the Majority Voting template (:func:`build_majority_voting_graph`),
 which Self-Consistency uses in two modes:
 
@@ -16,8 +16,8 @@ which Self-Consistency uses in two modes:
 Majority Voting later calls the identical builder with replay specs sourced
 from *downloaded* artifacts — the same code path SC's aggregation pass
 exercises, not a parallel implementation. The BoN-MAV graph is a separate
-template (see docs/L1_MAJ_BONMAV_PLAN.md) since its topology (candidates +
-verifiers + selection) differs from a plain vote.
+template since its topology (candidates + verifiers + selection) differs
+from a plain vote.
 
 The majority vote is produced **by the graph protocol itself** — the
 ``aggregate`` node groups its own fanned-in samples via
@@ -234,7 +234,7 @@ def build_majority_voting_graph(
 
 # ---------------------------------------------------------------------------
 # BoN-MAV — a separate template: candidates + verifiers + selection, not a
-# plain vote (see docs/L1_MAJ_BONMAV_PLAN.md §3.3).
+# plain vote.
 # ---------------------------------------------------------------------------
 
 class Approval(TypedDict):
