@@ -41,6 +41,8 @@ pip-delete-this-directory.txt
 .project
 .classpath
 .settings/
+graphify-out/
+notebooks-md/
 
 # ========================
 # Logs & Outputs
