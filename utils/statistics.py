@@ -15,6 +15,8 @@ Provides:
                                         correlation via the Design Effect (DEFF)
     - accuracy_statistics:              Cluster-t CI for accuracy on per-problem
                                         means; Wilson kept as supplementary
+    - pct_votes_top_statistics:         Cluster-t CI for the winning option's
+                                        vote/approval share, on per-problem means
     - time_statistics / token_statistics:
                                         Nonparametric summary for any (N, m)
                                         time or token-count matrix, built on the
@@ -561,6 +563,62 @@ def vram_statistics(
 
 
 # ---------------------------------------------------------------------------
+# Winning-option vote/approval share estimation
+# ---------------------------------------------------------------------------
+
+def pct_votes_top_statistics(
+    pct_matrix: ArrayLike,
+    alpha: float = 0.05,
+) -> dict:
+    """Cluster-t CI for the winning option's vote/approval share.
+
+    Same cluster-t-over-per-problem-means approach as
+    :func:`accuracy_statistics`, treating the problem as the unit of
+    analysis. No Wilson supplementary CI here: the input is a continuous
+    share in [0, 1] (fraction of votes/approvals the winner received),
+    not a binary correctness indicator. Works identically whether ``m``
+    (seeds/reps per problem) is 1 (BoN-MAV) or 2 (MAJ).
+
+    Parameters
+    ----------
+    pct_matrix : array-like of shape (N, m)
+        Per-run winning-option vote/approval share, in [0, 1].
+    alpha : float, default 0.05
+        Significance level.
+
+    Returns
+    -------
+    dict
+        Keys: mean_pct_votes_top, between_problem_std, ci_lower, ci_upper,
+        ci_method, alpha, n_problems, n_seeds, n_total.
+    """
+    arr = np.asarray(pct_matrix, dtype=float)
+    if arr.ndim != 2:
+        raise ValueError(
+            f"Expected 2-D array of shape (N, m), got shape {arr.shape}"
+        )
+    n_problems, n_seeds = arr.shape
+    n_total = n_problems * n_seeds
+
+    p_i = _per_problem_means(arr)          # per-problem vote-share means, shape (N,)
+    mean_pct_votes_top = float(np.mean(p_i))
+    ci_lower, ci_upper = _cluster_t_ci(p_i, alpha, clip=(0.0, 1.0))
+    between_problem_std = float(np.std(p_i, ddof=1)) if n_problems > 1 else 0.0
+
+    return {
+        "mean_pct_votes_top": mean_pct_votes_top,
+        "between_problem_std": between_problem_std,
+        "ci_lower": ci_lower,
+        "ci_upper": ci_upper,
+        "ci_method": "cluster_t",
+        "alpha": alpha,
+        "n_problems": n_problems,
+        "n_seeds": n_seeds,
+        "n_total": n_total,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Ratios statistics: overhead ratios (latency, tokens) and throughput (tokens/s)
 # ---------------------------------------------------------------------------
 
@@ -858,6 +916,26 @@ def print_accuracy_stats_report(
     print(f"  DEFF                       {result['wilson_n_eff']:>7.3f}")
     print(f"  ICC                        {result['wilson_icc']:>7.3f}")
     print(f"  ── Sample ──")
+    print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}  (n={result['n_total']})")
+    print(f"{'=' * 55}\n")
+
+
+def print_pct_votes_top_report(
+    label: str,
+    result: dict,
+    *,
+    as_percentage: bool = True,
+) -> None:
+    """Print a formatted report from :func:`pct_votes_top_statistics`."""
+    scale = 100.0 if as_percentage else 1.0
+    unit = "%" if as_percentage else ""
+    ci_pct = int(round((1.0 - result.get("alpha", 0.05)) * 100))
+    print(f"\n{'=' * 55}")
+    print(f"  {label}")
+    print(f"{'=' * 55}")
+    print(f"  Mean winner vote share     {result['mean_pct_votes_top'] * scale:>7.2f}{unit}")
+    print(f"  {ci_pct}% Cluster-t CI         [{result['ci_lower'] * scale:.2f}, {result['ci_upper'] * scale:.2f}]{unit}")
+    print(f"  Between-problem std        {result['between_problem_std'] * scale:>7.4f}{unit}")
     print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}  (n={result['n_total']})")
     print(f"{'=' * 55}\n")
 
