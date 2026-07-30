@@ -417,6 +417,7 @@ def compose_generation_metrics(
     calls: Sequence[Mapping[str, Any]],
     *,
     tokens_per_s_rule: Literal["recomputed", "mean"] = "recomputed",
+    vram_rule: Literal["sum_per_model", "coresident_peak"] = "sum_per_model",
 ) -> dict:
     """Compute composition shared by every L1 protocol: SC, MAJ, BoN-MAV.
 
@@ -428,13 +429,19 @@ def compose_generation_metrics(
     the calls ran sequentially (SC, one resident model) or as a heterogeneous
     ensemble (MAJ/BoN-MAV, several models resident at once).
 
-    ``gpu_peak_mb`` is the **sum over distinct ``model_key``** of that
-    model's max per-call peak — a model occupying two slots (e.g. MAJ's E4/
-    E5) is loaded once, hence max-within-model before the sum. This is a
-    strict generalization of the old single-model rule, not a different one:
-    when every call shares one ``model_key`` (SC, and BoN-MAV's E6/E7
-    self-improvement runs), "sum over distinct model_key" has exactly one
-    term and reduces to a plain max.
+    ``vram_rule`` selects how the per-call ``gpu_peak_mb`` values combine
+    into one ensemble-level peak — picking the wrong one silently
+    mis-measures VRAM:
+
+    * ``"sum_per_model"`` (default) — sum, over distinct ``model_key``, of
+      that model's max per-call peak. Valid only when each call was measured
+      with a single model resident (replayed records, or one-at-a-time
+      sequential runs); reduces to a plain max when every call shares one
+      ``model_key``.
+    * ``"coresident_peak"`` — a single ``max()`` over every call's
+      ``gpu_peak_mb``. Use for calls from models genuinely loaded together
+      (a live ensemble): each such peak already reflects the whole
+      co-resident footprint, so summing them (the other rule) over-counts.
 
     ``tokens_per_s_rule`` selects the one axis that genuinely differs by
     protocol, since the two aggregation stories mean different things:
@@ -447,19 +454,13 @@ def compose_generation_metrics(
       average over, so summing totals would let one slow model drag down a
       fast one's own rate; the calls' rates are averaged instead.
 
-    Caveat: the per-call ``gpu_peak_mb`` values summed into the VRAM rule
-    above must each have been measured with a *single* model resident (see
-    ``utils.instrumentation.reset_gpu_peak``/``gpu_peak_mem_mb``) — that
-    single-residency is exactly what makes them summable. Applying this same
-    reconstruction to peaks already measured while several models are
-    co-resident would over-count.
-
     Raises
     ------
     KeyError
         If any call is missing ``model_key`` or one of the metric fields.
     ValueError
-        If ``calls`` is empty.
+        If ``calls`` is empty, or ``vram_rule``/``tokens_per_s_rule`` is
+        unrecognized.
     """
     if not calls:
         raise ValueError("compose_generation_metrics requires at least one call")
@@ -469,11 +470,16 @@ def compose_generation_metrics(
     output_tokens = sum(call["output_tokens"] for call in calls)
     total_tokens = sum(call["total_tokens"] for call in calls)
 
-    peak_by_model: dict[str, float] = {}
-    for call in calls:
-        model_key = call["model_key"]
-        peak_by_model[model_key] = max(peak_by_model.get(model_key, 0.0), call["gpu_peak_mb"])
-    gpu_peak_mb = sum(peak_by_model.values())
+    if vram_rule == "sum_per_model":
+        peak_by_model: dict[str, float] = {}
+        for call in calls:
+            model_key = call["model_key"]
+            peak_by_model[model_key] = max(peak_by_model.get(model_key, 0.0), call["gpu_peak_mb"])
+        gpu_peak_mb = sum(peak_by_model.values())
+    elif vram_rule == "coresident_peak":
+        gpu_peak_mb = max(call["gpu_peak_mb"] for call in calls)
+    else:
+        raise ValueError(f"Unknown vram_rule {vram_rule!r}; expected 'sum_per_model' or 'coresident_peak'")
 
     if tokens_per_s_rule == "recomputed":
         # Unrounded — this is a composed value from summed totals, not a

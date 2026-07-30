@@ -157,18 +157,14 @@ def build_majority_voting_graph(
     benchmark_spec: BenchmarkSpec,
     *,
     rng,
+    vram_rule: Literal["sum_per_model", "coresident_peak"] = "sum_per_model",
 ) -> CompiledStateGraph:
     """Build the Majority Voting graph: ``START -> gen_* -> aggregate -> END``.
 
-    One ``<agent_id>`` node per spec (live or replay); LangGraph executes
-    same-superstep nodes sequentially in-process under a synchronous
-    ``.invoke()``, so only one model is ever resident in VRAM and
-    ``batch_size=1`` holds. ``aggregate`` fans in every sample (via the
-    ``samples`` reducer) and groups + votes over them itself, via
-    :func:`utils.voting.group_generations` and :func:`utils.voting.majority_vote`
-    — the majority vote is produced by the protocol, not by a caller that
-    merely reads the fanned-in samples back out. It also composes the
-    subset's metrics via :func:`utils.voting.compose_generation_metrics`.
+    One ``<agent_id>`` node per spec (live or replay), called sequentially
+    in-process via synchronous ``.invoke()`` — a caller may still pre-load
+    every agent's model together first (a live, co-resident ensemble).
+    ``aggregate`` fans in samples, votes, and composes metrics.
 
     Parameters
     ----------
@@ -185,6 +181,11 @@ def build_majority_voting_graph(
         :func:`utils.voting.majority_vote` and
         :func:`utils.voting.run_self_consistency`, which construct one
         instance and thread it through every graph they compile.
+    vram_rule : {"sum_per_model", "coresident_peak"}
+        Forwarded to :func:`utils.voting.compose_generation_metrics`. Keep
+        the default for replayed/sequential runs (one model resident per
+        call). Pass ``"coresident_peak"`` when every ``agent_specs`` model
+        was pre-loaded together live, or VRAM over-counts.
 
     Returns
     -------
@@ -221,7 +222,7 @@ def build_majority_voting_graph(
         vote = majority_vote(labels, rng=rng)
         if vote["winner_idx"] is not None:
             vote["winner_pred"] = predictions[vote["winner_idx"]]
-        metrics = compose_generation_metrics(samples)
+        metrics = compose_generation_metrics(samples, vram_rule=vram_rule)
         return {"vote": vote, "metrics": metrics}
 
     graph.add_node("aggregate", aggregate)
