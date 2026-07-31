@@ -9,6 +9,12 @@ Connection to the project WPs
 * WP1-T1 & WP2-T3: also called inline to report per-run accuracy/cost CIs.
 
 Provides:
+    Shared reduction:
+    - per_problem_means:                Validate (N, m) and reduce to the N
+                                        per-problem means — the unit of analysis
+                                        for every estimator here and for the
+                                        per-sample W&B series
+
     Per-system estimation (primary scope):
     - pooled_accuracy:                  Unbiased point estimate of accuracy
     - wilson_ci_clustered:              Wilson CI adjusted for within-problem
@@ -64,11 +70,16 @@ from scipy import stats as sp_stats
 
 
 # ---------------------------------------------------------------------------
-# Private helpers
+# Helpers — per-problem reduction (public) and CI machinery (private)
 # ---------------------------------------------------------------------------
 
-def _per_problem_means(arr: np.ndarray) -> np.ndarray:
-    """Validate (N, m) shape and return the N per-problem means."""
+def per_problem_means(arr: np.ndarray) -> np.ndarray:
+    """Validate (N, m) shape and return the N per-problem means.
+
+    Public because the unit of analysis is shared: every estimator here and
+    the per-sample W&B series in :mod:`utils.logging_utils` must collapse a
+    problems x reps matrix the same way.
+    """
     if arr.ndim != 2:
         raise ValueError(
             f"Expected 2-D array of shape (N, m), got shape {arr.shape}"
@@ -213,7 +224,7 @@ def wilson_ci_clustered(
     n_total = n_problems * n_seeds
 
     p_hat = pooled_accuracy(arr)
-    x_bar_i = _per_problem_means(arr)
+    x_bar_i = per_problem_means(arr)
     sigma2_c = float(np.var(x_bar_i, ddof=1))
 
     if p_hat == 0.0 or p_hat == 1.0:
@@ -296,7 +307,7 @@ def accuracy_statistics(
     n_problems, n_seeds = arr.shape
     n_total = n_problems * n_seeds
 
-    p_i = _per_problem_means(arr)          # per-problem accuracies, shape (N,)
+    p_i = per_problem_means(arr)          # per-problem accuracies, shape (N,)
     p_hat = pooled_accuracy(arr)
     ci_lower, ci_upper = _cluster_t_ci(p_i, alpha, clip=(0.0, 1.0))
     between_problem_std = float(np.std(p_i, ddof=1)) if n_problems > 1 else 0.0
@@ -381,9 +392,9 @@ def _metric_statistics(
     }
 
     # ── Inferential (per-problem means) ──
-    per_problem_means = _per_problem_means(arr)
-    ci_lower, ci_upper = _cluster_bca_ci(per_problem_means, alpha, n_bootstrap)
-    between_problem_std = float(np.std(per_problem_means, ddof=1)) if n_problems > 1 else 0.0
+    pp_means = per_problem_means(arr)
+    ci_lower, ci_upper = _cluster_bca_ci(pp_means, alpha, n_bootstrap)
+    between_problem_std = float(np.std(pp_means, ddof=1)) if n_problems > 1 else 0.0
 
     result = {
         "mean": mean,
@@ -529,11 +540,11 @@ def vram_statistics(
     n_total = n_problems * n_seeds
     flat = arr.ravel()
 
-    per_problem_means = _per_problem_means(arr)
-    mean_peak = float(np.mean(per_problem_means))
-    ci_lower, ci_upper = _cluster_t_ci(per_problem_means, alpha)
+    pp_means = per_problem_means(arr)
+    mean_peak = float(np.mean(pp_means))
+    ci_lower, ci_upper = _cluster_t_ci(pp_means, alpha)
     peak_max = float(arr.max())
-    between_problem_std = float(np.std(per_problem_means, ddof=1)) if n_problems > 1 else 0.0
+    between_problem_std = float(np.std(pp_means, ddof=1)) if n_problems > 1 else 0.0
 
     p25, p50, p75, p95 = np.percentile(flat, [25, 50, 75, 95])
     percentiles = {
@@ -600,7 +611,7 @@ def pct_votes_top_statistics(
     n_problems, n_seeds = arr.shape
     n_total = n_problems * n_seeds
 
-    p_i = _per_problem_means(arr)          # per-problem vote-share means, shape (N,)
+    p_i = per_problem_means(arr)          # per-problem vote-share means, shape (N,)
     mean_pct_votes_top = float(np.mean(p_i))
     ci_lower, ci_upper = _cluster_t_ci(p_i, alpha, clip=(0.0, 1.0))
     between_problem_std = float(np.std(p_i, ddof=1)) if n_problems > 1 else 0.0
@@ -669,13 +680,13 @@ def overhead_ratio_statistics(
         )
 
     n_problems, n_seeds = mas.shape
-    base_means = _per_problem_means(base)      # shape (N,)
+    base_means = per_problem_means(base)      # shape (N,)
     if np.any(base_means <= 0.0):
         raise ValueError(
             "All per-problem baseline means must be > 0 to compute ratios."
         )
 
-    r_i = _per_problem_means(mas) / base_means   # per-problem ratios
+    r_i = per_problem_means(mas) / base_means   # per-problem ratios
 
     geometric_mean = float(np.exp(np.mean(np.log(r_i))))
     arithmetic_mean = float(np.mean(r_i))
@@ -739,7 +750,7 @@ def overhead_difference_statistics(
         )
 
     n_problems, n_seeds = mas.shape
-    d_i = _per_problem_means(mas) - _per_problem_means(base)
+    d_i = per_problem_means(mas) - per_problem_means(base)
 
     mean_diff = float(np.mean(d_i))
     ci_lower, ci_upper = _cluster_t_ci(d_i, alpha)
@@ -776,7 +787,7 @@ def welch_t_test_metric(
     ----------
     per_problem_means_a : array-like, 1-D
         Per-problem means for system A, shape (N,) — e.g. the output of
-        ``_per_problem_means`` on a raw (N, m) metric matrix.
+        ``per_problem_means`` on a raw (N, m) metric matrix.
     per_problem_means_b : array-like, 1-D
         Per-problem means for system B.
 

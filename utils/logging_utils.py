@@ -15,9 +15,12 @@ Connection to the project WPs
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
+import numpy as np
 import wandb  # type: ignore
+
+from utils.statistics import per_problem_means
 
 
 # Detect cloud runtime environment
@@ -95,6 +98,80 @@ def define_wandb_chart_only_metrics(
 def log_metrics(metrics: dict[str, Any], step: Optional[int] = None) -> None:
     """Log a dictionary of metrics to the active W&B run."""
     wandb.log(metrics, step=step)
+
+
+# Per-sample chart precision, one place for every protocol notebook. Token
+# counts stay floats at 2 dp because they are rep-means, not counts: rounding
+# them to int would drift from the *_tokens_stats CIs, which are computed on
+# exactly these per-problem means.
+PER_SAMPLE_ROUNDING: dict[str, int] = {
+    "accuracy": 4,
+    "latency_s": 2,
+    "output_tokens": 2,
+    "total_tokens": 2,
+    "gpu_peak_mb": 2,
+    "throughput_tok_s": 4,
+    "pct_votes_top": 4,
+}
+
+
+def log_per_problem_means(
+    prefix: str,
+    matrices: Mapping[str, np.ndarray],
+    rounding: Mapping[str, int] | None = None,
+) -> None:
+    """Log one per-sample history point per problem, averaged over reps.
+
+    Protocols that repeat the evaluation (MAJ runs ``N_REPS`` reps per
+    problem) must still emit a single per-sample series indexed by problem, so
+    their charts line up on the implicit ``_step`` axis with single-rep
+    protocols such as BoN-MAV.  Each ``(N, m)`` matrix is collapsed to its
+    ``N`` per-problem means via :func:`utils.statistics.per_problem_means`
+    and emitted as one ``wandb.log`` at ``step=problem_id``.
+
+    Call once, after the evaluation loops and before any other ``wandb.log``
+    in the run: an earlier history write pushes ``_step`` past ``problem_id``
+    and W&B then rejects the points.
+
+    Parameters
+    ----------
+    prefix : str
+        Metric namespace without trailing slash, e.g. ``"math500_sample"``.
+    matrices : Mapping[str, np.ndarray]
+        Metric name -> ``(n_problems, n_reps)`` matrix.  All matrices must
+        share the same ``n_problems``.
+    rounding : Mapping[str, int] | None
+        Decimal places per metric name.  Defaults to
+        :data:`PER_SAMPLE_ROUNDING`; names absent from the mapping are logged
+        unrounded.
+    """
+    if not matrices:
+        raise ValueError("matrices must contain at least one metric.")
+
+    rounding = PER_SAMPLE_ROUNDING if rounding is None else rounding
+    means = {
+        name: per_problem_means(np.asarray(matrix, dtype=float))
+        for name, matrix in matrices.items()
+    }
+
+    sizes = {name: arr.shape[0] for name, arr in means.items()}
+    if len(set(sizes.values())) > 1:
+        raise ValueError(
+            f"All matrices must share the same n_problems, got {sizes}"
+        )
+
+    for problem_id in range(next(iter(sizes.values()))):
+        log_metrics(
+            {
+                f"{prefix}/{name}": (
+                    round(float(arr[problem_id]), rounding[name])
+                    if name in rounding
+                    else float(arr[problem_id])
+                )
+                for name, arr in means.items()
+            },
+            step=problem_id,
+        )
 
 
 def finish_wandb() -> None:
