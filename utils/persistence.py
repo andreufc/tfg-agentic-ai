@@ -1,27 +1,27 @@
 """
-persistence.py — Full-text generation persistence and W&B artifact retrieval.
+persistence.py: Full-text generation persistence and W&B artifact retrieval.
 
 Self-Consistency (SC) is the only fresh generator compute in the L1 campaign:
 Majority Voting and BoN-MAV reuse its per-generation text and metrics instead
 of re-generating. The v2.x baselines only log a truncated results table and a
-scalar-only ``.npz`` artifact — neither carries full response text — so this
+scalar-only `.npz` artifact, neither carries full response text, so this
 module is the reuse vehicle: a JSONL artifact (one record per
-``(problem_id, gen_id)``) plus the W&B API glue to retrieve it in a
-downstream run with real producer -> consumer lineage.
+`(problem_id, gen_id)`) plus the W&B API glue to retrieve it in a
+downstream run with real producer to consumer lineage.
 
-Every persisted record's primary key is ``(dataset, problem_id, model_key,
-gen_id)`` — all four human-readable, all four citable in the thesis via
-``utils.registry.problem_ref``. Neither the dataset row's native id nor the
+Every persisted record's primary key is `(dataset, problem_id, model_key,
+gen_id)`, all four human-readable and citable in the thesis via
+`utils.registry.problem_ref`. Neither the dataset row's native id nor the
 model's HF path is persisted per-record: both are recoverable, the first from
-``(dataset, data_seed, eval_size)`` (already in the manifest — ``problem_id``
-is a position in that seeded subset), the second from ``model_key`` via
-``utils.registry.get_model``.
+`(dataset, data_seed, eval_size)` (already in the manifest; `problem_id`
+is a position in that seeded subset), the second from `model_key` via
+`utils.registry.get_model`.
 
 Connection to the project WPs
 -----------------------------
 * WP2-T4 (L1 multi-agent protocols): persists SC's full generations so MAJ and
   BoN-MAV can consume them without regenerating.
-* WP3-T1: ``run.use_artifact`` records the exact producer version a consumer
+* WP3-T1: `run.use_artifact` records the exact producer version a consumer
   run used (Claim-to-Evidence).
 """
 
@@ -39,7 +39,7 @@ GENERATIONS_FILENAME = "generations.jsonl"
 MANIFEST_FILENAME = "manifest.json"
 
 # The full field set of a generation record, as produced by
-# `make_generation_record` — a test asserts the two never drift apart.
+# `make_generation_record`; a test asserts the two never drift apart.
 RECORD_FIELDS = (
     "dataset", "problem_id", "model_key", "gen_id",
     "seed", "protocol",
@@ -52,13 +52,14 @@ RECORD_FIELDS = (
 class AlignmentError(RuntimeError):
     """Raised when a downloaded generation store doesn't match the locally
     loaded dataset subset (wrong dataset/model_key/data_seed/eval_size, or a
-    task-text mismatch at some problem index)."""
+    task-text mismatch at some problem index).
+    """
 
 
 def _normalize_task(text: str) -> str:
     """Collapse all whitespace runs to a single space.
 
-    Used by :func:`validate_alignment` so a stored ``task`` and a freshly
+    Used by :func:`validate_alignment` so a stored `task` and a freshly
     rendered one compare equal despite formatting-only differences.
     """
     return " ".join(text.split())
@@ -78,14 +79,14 @@ def make_generation_record(
     tokens_per_s: float,
     extra: Optional[dict] = None,
 ) -> dict:
-    """Build one generation record with a consistent primary key and checksum.
+    """Build one generation record with a consistent primary key.
 
-    ``sample`` is an ``AgentSample`` (see ``utils.graphs``) — the generator's
-    own output — from which ``answer``, ``parsed_output`` and the metric
-    fields are pulled. ``validate_alignment`` compares the stored ``task``
-    text directly against a fresh render, so producer and validator can
-    never diverge. ``extra`` carries per-benchmark fields (``subject``,
-    ``level``) not shared across datasets.
+    `sample` is an `AgentSample` (see `utils.graphs`), the generator's own
+    output, from which `answer`, `parsed_output` and the metric fields are
+    pulled. `validate_alignment` compares the stored `task` text directly
+    against a fresh render, so producer and validator can never diverge.
+    `extra` carries per-benchmark fields (`subject`, `level`) not shared
+    across datasets.
     """
     record = {
         "dataset": dataset,
@@ -111,9 +112,9 @@ def make_generation_record(
 
 
 def assert_unique_pk(records: Sequence[Mapping[str, Any]]) -> None:
-    """Raise ``ValueError`` if any two records share a primary key.
+    """Raise `ValueError` if any two records share a primary key.
 
-    The primary key is ``(dataset, problem_id, model_key, gen_id)``. Intended
+    The primary key is `(dataset, problem_id, model_key, gen_id)`. Intended
     as an on-Kaggle invariant check after merging generation records across
     models/artifacts (e.g. the smoke test's merged record set), where a
     silent duplicate would otherwise corrupt a downstream store.
@@ -154,32 +155,31 @@ def log_generations_artifact(
 ) -> "wandb.Artifact":
     """Log a generations JSONL + manifest as a W&B artifact.
 
-    Intended to be called once per completed generation seed pass — logging
-    under the same ``name`` each time creates a new artifact *version*, so a
+    Intended to be called once per completed generation seed pass: logging
+    under the same `name` each time creates a new artifact version, so a
     Kaggle session killed partway through resumes from the last version
     instead of losing every prior seed's generations.
 
-    Blocks on ``artifact.wait()`` before returning, so the caller can read
-    the *actual* committed version off the returned artifact (via
-    :func:`artifact_ref`) rather than computing an assumed ``:vN`` — the
-    computed form silently repoints at the wrong version after any resume or
-    partial rerun.
+    Blocks on `artifact.wait()` before returning, so the caller can read the
+    actual committed version off the returned artifact (via
+    :func:`artifact_ref`) rather than computing an assumed `:vN`, which
+    silently repoints at the wrong version after any resume or partial rerun.
 
     Parameters
     ----------
     records : list[dict]
         Generation records (see the module docstring for the schema).
     manifest : dict
-        Run/config metadata — see the SC plan's manifest schema.
+        Run/config metadata; see the SC plan's manifest schema.
     name : str
-        Artifact name, typically ``utils.registry.generations_artifact_name``.
+        Artifact name, typically `utils.registry.generations_artifact_name`.
     run : wandb.Run | None
-        The active run to log to. Defaults to ``wandb.run``.
+        The active run to log to. Defaults to `wandb.run`.
 
     Returns
     -------
     wandb.Artifact
-        The committed artifact, with ``.version`` populated.
+        The committed artifact, with `.version` populated.
     """
     run = run or wandb.run
     if run is None:
@@ -206,38 +206,37 @@ def log_generations_artifact(
         artifact.add_file(str(manifest_path), name=MANIFEST_FILENAME)
 
     run.log_artifact(artifact)
-    artifact.wait()  # blocks until committed — .version is only assigned after this
+    artifact.wait()  # blocks until committed; .version is only assigned after this
     assert artifact.version, f"artifact {name!r} did not commit a version"
     return artifact
 
 
 def artifact_ref(artifact: "wandb.Artifact", *, entity: str, project: str) -> str:
-    """The pinned ``entity/project/name:version`` reference for a committed artifact.
+    """The pinned `entity/project/name:version` reference for a committed artifact.
 
     Call only after :func:`log_generations_artifact` (i.e. after
-    ``artifact.wait()``), so ``artifact.version`` is populated. Consumers must
-    pin an explicit version (never ``:latest``) so the run config records
+    `artifact.wait()`), so `artifact.version` is populated. Consumers must
+    pin an explicit version (never `:latest`) so the run config records
     exactly which producer version was used.
 
-    ``Artifact.name`` already reads back as ``collection:vN`` once the artifact
-    is committed (W&B stamps the version into the name at commit time), so the
-    collection is split off before the version is appended — otherwise the ref
-    comes out as ``.../name:vN:vN``, which the backend rejects with "invalid
-    alias. aliases must be specified as collectionName:alias". Splitting also
-    keeps this correct for a not-yet-committed artifact, whose ``name`` is the
-    bare collection.
+    `Artifact.name` already reads back as `collection:vN` once the artifact
+    is committed (W&B stamps the version into the name at commit time), so
+    the collection is split off before the version is appended: otherwise
+    the ref comes out as `.../name:vN:vN`, which the backend rejects as an
+    invalid alias. Splitting also keeps this correct for a not-yet-committed
+    artifact, whose `name` is the bare collection.
     """
     collection = artifact.name.split(":", 1)[0]
     return f"{entity}/{project}/{collection}:{artifact.version}"
 
 
 def normalize_artifact_ref(ref: str) -> str:
-    """Collapse a doubly-pinned ``name:vN:vN`` reference back to ``name:vN``.
+    """Collapse a doubly-pinned `name:vN:vN` reference back to `name:vN`.
 
     Refs produced before :func:`artifact_ref` learned to split the collection
-    off ``Artifact.name`` carry the version twice, and those malformed strings
-    are already recorded in past runs' ``config``/``summary`` (and hand-copied
-    into the MAJ and BoN-MAV notebooks' ``PRODUCER_REFS``). Consumers normalize
+    off `Artifact.name` carry the version twice, and those malformed strings
+    are already recorded in past runs' `config`/`summary` (and hand-copied
+    into the MAJ and BoN-MAV notebooks' `PRODUCER_REFS`). Consumers normalize
     on the way in so those refs still resolve. Well-formed refs pass through
     untouched.
     """
@@ -245,7 +244,7 @@ def normalize_artifact_ref(ref: str) -> str:
     collection, sep, alias = name.partition(":")
     if not sep:
         return ref
-    # Only a repeated version suffix is collapsed — a legitimate alias never
+    # Only a repeated version suffix is collapsed; a legitimate alias never
     # contains ':', so anything else is left alone for W&B itself to reject.
     parts = alias.split(":")
     if len(parts) > 1 and len(set(parts)) == 1:
@@ -266,17 +265,17 @@ def load_generations_artifact(
     ----------
     ref : str
         Explicit artifact reference, e.g.
-        ``"entity/project/sc-generations-qwen3-1.7b-math500:v4"``. Pin an
-        explicit version (not ``:latest``) in every real consumer run so the
+        `"entity/project/sc-generations-qwen3-1.7b-math500:v4"`. Pin an
+        explicit version (not `:latest`) in every real consumer run so the
         run config records exactly which producer version was used. Passed
         through :func:`normalize_artifact_ref` first, so a doubly-pinned ref
         recorded by an older run still resolves.
     run : wandb.Run | None
-        If given, uses ``run.use_artifact(ref)`` so the download is
-        recorded as W&B lineage on the consumer run (Claim-to-Evidence).
+        If given, uses `run.use_artifact(ref)` so the download is recorded
+        as W&B lineage on the consumer run (Claim-to-Evidence).
     api : wandb.Api | None
-        If ``run`` is not given, used for a read-only download (no lineage
-        recorded). Defaults to a fresh ``wandb.Api()``.
+        If `run` is not given, used for a read-only download (no lineage
+        recorded). Defaults to a fresh `wandb.Api()`.
 
     Returns
     -------
@@ -297,17 +296,17 @@ def load_generations_artifact(
 
 
 def build_generation_store(records: list[dict]) -> dict[tuple[int, int], dict]:
-    """Index generation records by ``(problem_id, gen_id)``.
+    """Index generation records by `(problem_id, gen_id)`.
 
-    Sound only within a single ``(dataset, model_key)`` — the 2-tuple key
-    drops both, so mixing records from more than one dataset or model would
+    Sound only within a single `(dataset, model_key)`: the 2-tuple key drops
+    both, so mixing records from more than one dataset or model would
     silently overwrite unrelated problems' generations.
 
     Raises
     ------
     ValueError
-        If records span more than one ``dataset`` or ``model_key``, or if the
-        same ``(problem_id, gen_id)`` key appears more than once — a
+        If records span more than one `dataset` or `model_key`, or if the
+        same `(problem_id, gen_id)` key appears more than once, since a
         corrupted or double-logged artifact must not silently drop data.
     """
     store: dict[tuple[int, int], dict] = {}
@@ -351,21 +350,18 @@ def validate_alignment(
 ) -> None:
     """Validate a downloaded generation store against the locally loaded subset.
 
-    Checks (in order, raising on the first failure):
+    Checks, in order, raising :class:`AlignmentError` on the first failure:
 
-    1. The manifest's ``dataset`` / ``model_key`` match what the caller
-       expects.
-    2. The manifest's ``data_seed`` / ``eval_size`` match what the caller
-       expects (i.e. the producer and consumer used the same seeded subset).
-    3. Every ``(problem_id, gen_id)`` for ``problem_id`` in
-       ``range(expected_eval_size)`` and ``gen_id`` in
-       ``range(n_generators)`` is present in the store.
-    4. Each stored record's ``task`` text (whitespace-normalized) matches
-       ``render_task(dataset[problem_id])`` — guards against the producer
-       and consumer silently disagreeing on the question ordering or
-       rendering, and against dataset content drift.
-
-    All checks raise :class:`AlignmentError`.
+    1. The manifest's `dataset` / `model_key` match what the caller expects.
+    2. The manifest's `data_seed` / `eval_size` match what the caller expects
+       (i.e. the producer and consumer used the same seeded subset).
+    3. Every `(problem_id, gen_id)` for `problem_id` in
+       `range(expected_eval_size)` and `gen_id` in `range(n_generators)` is
+       present in the store.
+    4. Each stored record's `task` text (whitespace-normalized) matches
+       `render_task(dataset[problem_id])`, guarding against the producer and
+       consumer silently disagreeing on question ordering or rendering, and
+       against dataset content drift.
 
     Parameters
     ----------
@@ -374,11 +370,11 @@ def validate_alignment(
     store : dict
         Output of :func:`build_generation_store`.
     dataset : Sequence
-        The locally loaded, seeded dataset subset (e.g. from
-        ``load_math500`` / ``load_mmlu`` + the fixed ``random.sample``).
+        The locally loaded, seeded dataset subset (e.g. from `load_math500`
+        / `load_mmlu` + the fixed `random.sample`).
     render_task : Callable[[Any], str]
         Renders a dataset item into the exact task string the producer
-        stored — typically ``BenchmarkSpec.render_task`` for the same
+        stored, typically `BenchmarkSpec.render_task` for the same
         benchmark, so producer and validator provably render identically.
     expected_dataset : str
         The dataset name the consumer expects the producer to have used.
@@ -389,7 +385,7 @@ def validate_alignment(
     expected_eval_size : int
         Number of problems expected to be covered.
     n_generators : int
-        Number of generators (``gen_id`` values) expected per problem.
+        Number of generators (`gen_id` values) expected per problem.
     """
     if manifest.get("dataset") != expected_dataset:
         raise AlignmentError(
@@ -441,23 +437,23 @@ def fetch_and_validate_stores(
     expected_eval_size: int,
     n_generators: int,
 ) -> tuple[dict[str, dict], dict[str, int]]:
-    """Download + validate one generations store per model_key, all lineage-tracked on ``run``.
+    """Download + validate one generations store per model_key, lineage-tracked on `run`.
 
-    The shared reuse pattern behind MAJ's/BoN-MAV's/the smoke test's per-run
-    candidate loading: each ``model_key``'s producer artifact is fetched via
-    :func:`load_generations_artifact` with a real, active ``run`` (so W&B
-    records real producer->consumer lineage on *that* run, per the
+    The shared reuse pattern behind MAJ's, BoN-MAV's, and the smoke test's
+    per-run candidate loading: each `model_key`'s producer artifact is
+    fetched via :func:`load_generations_artifact` with a real, active `run`
+    (so W&B records real producer-to-consumer lineage on that run, per the
     Claim-to-Evidence requirement), then validated against the locally
-    loaded ``dataset_sample`` via :func:`validate_alignment`.
+    loaded `dataset_sample` via :func:`validate_alignment`.
 
     Returns
     -------
     (stores, alignment_counts)
-        ``stores[model_key]`` is the ``(problem_id, gen_id) -> record`` dict
-        from :func:`build_generation_store`; ``alignment_counts[model_key]``
-        is ``len(records)``, meant for stamping onto ``run.config`` after the
-        fact (config keys derived from this can't be known before ``run`` —
-        and therefore this data — exists).
+        `stores[model_key]` is the `(problem_id, gen_id) -> record` dict
+        from :func:`build_generation_store`; `alignment_counts[model_key]`
+        is `len(records)`, meant for stamping onto `run.config` after the
+        fact, since config keys derived from this can't be known before
+        `run` (and therefore this data) exists.
     """
     stores: dict[str, dict] = {}
     counts: dict[str, int] = {}

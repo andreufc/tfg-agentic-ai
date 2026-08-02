@@ -1,11 +1,11 @@
 """
-warmup.py — Model warmup to remove first-run latency/throughput artifacts.
+warmup.py: model warmup to remove first-run latency/throughput artifacts.
 
 Runs a few throwaway generations through the same HuggingFacePipeline path
 the evaluation uses, forcing CUDA/bitsandbytes kernel compilation and cuBLAS
 autotuning to happen before any timed measurement. Degrades gracefully when
-CUDA is unavailable (local CPU dev) — the generation still runs, just slower,
-and no GPU-only calls are forced.
+CUDA is unavailable (local CPU dev): generation still runs, just slower, and
+no GPU-only calls are forced.
 
 Connection to the project WPs
 -----------------------------
@@ -40,12 +40,12 @@ def warmup_model(
 ) -> float:
     """Run throwaway generations to trigger one-time kernel compilation.
 
-    Builds a temporary LangChain LLM via ``build_hf_langchain_llm`` (the same
-    factory the evaluation loop uses) and invokes it ``n_iterations`` times on
-    a short dummy prompt. The generated text is discarded.
-
-    Parameters mirror the notebook generation config so the warmed kernels
-    match the measured ones. Returns the total warmup wall-time in seconds.
+    Builds a temporary LangChain LLM via `build_hf_langchain_llm` (the same
+    factory the evaluation loop uses) and invokes it `n_iterations` times on
+    a short dummy prompt; the generated text is discarded. Parameters mirror
+    the notebook generation config so the warmed kernels match the measured
+    ones. Does not pass a seed, so it never perturbs the RNG state used by
+    the seeded evaluation runs that follow.
 
     Parameters
     ----------
@@ -54,15 +54,14 @@ def warmup_model(
     tokenizer : PreTrainedTokenizer
         The associated tokenizer.
     max_new_tokens : int
-        Tokens to generate per warmup iteration (default ``128`` — enough to
-        exercise the decode loop without wasting time).
+        Tokens to generate per warmup iteration (default 128).
     n_iterations : int
-        Number of throwaway generations (default ``2``).
+        Number of throwaway generations (default 2).
     temperature, top_p, top_k : float / int
         Sampling parameters; pass the same values as the evaluation so the
         warmed sampling path matches the measured one.
     prompt : str | None
-        Dummy prompt. A short default question is used when ``None``.
+        Dummy prompt. A short default question is used when None.
     verbose : bool
         Print progress messages.
 
@@ -70,14 +69,6 @@ def warmup_model(
     -------
     float
         Total warmup wall-time in seconds.
-
-    Notes
-    -----
-    - Does NOT pass a ``seed`` so it never perturbs the RNG state used by the
-      seeded evaluation runs that follow — reproducibility is preserved.
-    - Peak-VRAM stats are reset per step inside the eval loop
-      (``reset_gpu_peak`` in ``run_agent_step``), so warmup allocations do not
-      contaminate any measurement.
     """
     if prompt is None:
         prompt = "What is 2 + 2 * 2? Reason briefly and give the answer."

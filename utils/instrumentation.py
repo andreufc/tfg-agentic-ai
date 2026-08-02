@@ -1,11 +1,11 @@
 """
-instrumentation.py — Token counting, GPU peak-VRAM tracking, and throughput.
+instrumentation.py - Token counting, GPU peak-VRAM tracking, and throughput.
 
-Provides per-step helpers for:
-- Token counting (input and output tokens via the model's own tokenizer)
-- GPU peak VRAM measurement (torch.cuda, deterministic, zero overhead)
-- Generation throughput (output tokens / generation latency)
-- ``timed_invoke``: composes the above around a single ``chain.invoke`` call
+Per-step helpers: token counting (via the model's own tokenizer), GPU peak
+VRAM measurement (torch.cuda, deterministic, near-zero overhead), generation
+throughput, and timed_invoke, which composes the above around one
+chain.invoke call. All GPU helpers degrade to 0.0 when CUDA is unavailable
+(e.g. local CPU development).
 
 Connection to the project WPs
 -----------------------------
@@ -13,32 +13,24 @@ Connection to the project WPs
   generation, outside the timed region so latency stays clean.
 * WP3-T1: feeds those cost metrics into the accuracy-to-compute analysis (OBJ-3).
 
-All GPU helpers degrade gracefully to 0.0 when CUDA is unavailable
-(e.g. local CPU development).
-
 Design notes
 ------------
-- Token counting is intentionally performed *outside* the timed
-  ``chain.invoke`` region so latency measurements remain
-  uncontaminated (see ``timed_invoke`` below and ``run_agent_step``
-  in the v1.x/v2.x notebooks, which inline the same sequence).
-- ``count_tokens`` uses ``add_special_tokens=False`` for consistency
-  across all agents — chat-template wrapping may add 1–2 tokens vs
-  what the pipeline actually feeds the model, but both MAS and
-  baseline are measured identically so relative comparisons are sound.
-- Peak VRAM must be reset with ``reset_gpu_peak()`` immediately before
-  each measured scope; otherwise the counter reflects the global max
-  since the last manual reset (which includes model load).
-- ``tokens_per_second`` measures end-to-end throughput (prefill +
-  decode + Python/LangChain wrapper overhead), not pure decode rate.
-  Both MAS and baseline are measured identically so the ratio is a
-  sound efficiency comparison across protocols for the *same* model —
-  a protocol-dependent signal, which is what the accuracy-to-compute
-  analysis needs. A separate prefill-free "pure decode rate" metric
-  was prototyped but dropped: it is a per-model hardware constant that
-  does not vary with the protocol, so it cannot inform that tradeoff,
-  and measuring it adds real per-token GPU-sync overhead for a number
-  no experiment consumes.
+- Token counting runs outside the timed chain.invoke region so latency
+  stays uncontaminated (see timed_invoke below; the v1.x/v2.x notebooks'
+  run_agent_step inlines the same sequence for reproducibility).
+- count_tokens uses add_special_tokens=False for consistency; chat-template
+  wrapping may add 1-2 tokens vs what the pipeline feeds the model, but MAS
+  and baseline are measured identically so relative comparisons hold.
+- Peak VRAM must be reset with reset_gpu_peak() immediately before each
+  measured scope, or the counter reflects the global max since the last
+  manual reset (including model load).
+- tokens_per_second measures end-to-end throughput (prefill + decode +
+  wrapper overhead), not pure decode rate. MAS and baseline are measured
+  identically so the ratio is a sound cross-protocol efficiency comparison
+  for the same model. A prefill-free "pure decode rate" metric was
+  prototyped but dropped: it's a per-model hardware constant that doesn't
+  vary with protocol, so it can't inform that tradeoff, and it adds real
+  per-token GPU-sync overhead for a number no experiment consumes.
 """
 
 from __future__ import annotations
@@ -50,12 +42,10 @@ import torch
 
 
 # ---------------------------------------------------------------------------
-# Device resolution — measure only the GPU the model actually uses
+# Device resolution: measure only the GPU the model actually uses.
+# On multi-GPU kernels (e.g. Kaggle's 2x T4) the model is typically pinned to
+# a single device, so measurements must target that device, not index 0.
 # ---------------------------------------------------------------------------
-#
-# On multi-GPU kernels (e.g. Kaggle's 2× T4) the model is typically pinned to
-# a single device, so all measurements must target *that* device rather than
-# a hardcoded index 0.
 
 DeviceLike = Union[int, str, "torch.device", None]
 
@@ -63,8 +53,8 @@ DeviceLike = Union[int, str, "torch.device", None]
 def _resolve_torch_index(device: DeviceLike = None) -> Optional[int]:
     """Return the torch CUDA device index to measure.
 
-    ``None`` -> the current active device (where the model most likely is).
-    Returns ``None`` when CUDA is unavailable.
+    None resolves to the current active device (where the model likely is).
+    Returns None when CUDA is unavailable.
     """
     if not torch.cuda.is_available():
         return None
@@ -90,7 +80,7 @@ def count_tokens(tokenizer: Any, text: str) -> int:
     tokenizer : PreTrainedTokenizer
         The model's tokenizer (any HuggingFace fast tokenizer).
     text : str
-        Any string — a rendered prompt or a model completion.
+        Any string: a rendered prompt or a model completion.
 
     Returns
     -------
@@ -122,16 +112,16 @@ def render_prompt(prompt_template: Any, inputs: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# GPU peak VRAM  (torch.cuda — deterministic, microsecond overhead)
+# GPU peak VRAM (torch.cuda: deterministic, microsecond overhead)
 # ---------------------------------------------------------------------------
 
 def reset_gpu_peak(device: DeviceLike = None) -> None:
     """Reset the CUDA peak-memory counter for the measured device.
 
-    Call this immediately before the code block whose peak VRAM you
-    want to measure. ``device`` defaults to the active device (where the
-    model lives); pass an explicit index/str/torch.device to override.
-    No-op when CUDA is unavailable.
+    Call this immediately before the code block whose peak VRAM you want
+    to measure. device defaults to the active device (where the model
+    lives); pass an explicit index/str/torch.device to override. No-op
+    when CUDA is unavailable.
     """
     idx = _resolve_torch_index(device)
     if idx is not None:
@@ -144,9 +134,9 @@ def gpu_peak_mem_mb(device: DeviceLike = None) -> float:
     Parameters
     ----------
     device : int | str | torch.device | None
-        The CUDA device to read. ``None`` (default) reads the active
-        device, i.e. the one the model is loaded on — important on
-        multi-GPU kernels where only one device is in use.
+        The CUDA device to read. None (default) reads the active device,
+        i.e. the one the model is loaded on, important on multi-GPU
+        kernels where only one device is in use.
 
     Returns
     -------
@@ -178,17 +168,17 @@ def tokens_per_second(
     output_tokens : int
         Number of tokens generated.
     elapsed_s : float
-        Wall-clock seconds of the full ``chain.invoke`` call.
+        Wall-clock seconds of the full chain.invoke call.
     round_dp : int | None
-        Decimal places to round to (default ``4``). Pass ``None`` for the
-        unrounded ratio — used by ``utils.voting.compose_generation_metrics``,
-        which recomputes throughput from *summed* or *per-call* totals rather
+        Decimal places to round to (default 4). Pass None for the
+        unrounded ratio, used by utils.voting.compose_generation_metrics,
+        which recomputes throughput from summed or per-call totals rather
         than a single sample and should not carry this module's own rounding.
 
     Returns
     -------
     float
-        Tokens per second (0.0 if elapsed_s ≈ 0).
+        Tokens per second (0.0 if elapsed_s is ~0).
     """
     if elapsed_s < 1e-9:
         return 0.0
@@ -197,35 +187,35 @@ def tokens_per_second(
 
 
 # ---------------------------------------------------------------------------
-# Instrumented invoke  (composes the primitives above around one chain.invoke)
+# Instrumented invoke (composes the primitives above around one chain.invoke)
 # ---------------------------------------------------------------------------
 
 def timed_invoke(chain: Any, prompt_template: Any, tokenizer: Any, inputs: dict) -> dict:
-    """Render, time, and measure a single ``chain.invoke`` call.
+    """Render, time, and measure a single chain.invoke call.
 
-    Centralizes the render -> count input tokens -> reset peak VRAM -> time ->
-    count output tokens -> read peak VRAM sequence that every notebook's
-    generation step needs. v1.x/v2.x notebooks are already executed and keep
-    their own hand-inlined copy of this sequence (``run_agent_step``) for
+    Centralizes the render, count input tokens, reset peak VRAM, time,
+    count output tokens, read peak VRAM sequence every notebook's
+    generation step needs. v1.x/v2.x notebooks keep their own
+    hand-inlined copy of this sequence (run_agent_step) for
     reproducibility; v3.x+ notebooks call this helper instead.
 
     Parameters
     ----------
     chain : Runnable
-        A LangChain ``PromptTemplate | llm | OutputParser`` chain.
+        A LangChain PromptTemplate | llm | OutputParser chain.
     prompt_template : PromptTemplate
-        Used only to render the prompt for token counting — ``chain`` itself
-        is still invoked with ``inputs`` directly.
+        Used only to render the prompt for token counting; chain itself
+        is still invoked with inputs directly.
     tokenizer : PreTrainedTokenizer
         The model's own tokenizer, for consistent token counting.
     inputs : dict
-        Variable bindings passed to both ``render_prompt`` and ``chain.invoke``.
+        Variable bindings passed to both render_prompt and chain.invoke.
 
     Returns
     -------
     dict with keys:
-        output_text    (str)   — the chain's output
-        latency_s      (float) — wall-clock seconds of the invoke call
+        output_text    (str)   the chain's output
+        latency_s      (float) wall-clock seconds of the invoke call
         input_tokens   (int)
         output_tokens  (int)
         total_tokens   (int)

@@ -1,15 +1,15 @@
 """
-mav.py — aspect verifiers (AVs), verdict parsing, and BoN-MAV candidate
+mav.py - aspect verifiers (AVs), verdict parsing, and BoN-MAV candidate
 selection.
 
-Aspect content is transcribed **verbatim** from the original verifier
-specification — including its typos and inconsistent spacing, and its
-curly ' quote glyph. This is deliberate: the transcription must stay
-diffable against that source, not a paraphrase. ``<Question>``/
-``<Solution>`` placeholders become the Python format-string placeholders
-``{task}``/``{candidate}``, filled in via ``prompt.format(task=..., candidate=...)``.
+Aspect content is transcribed verbatim from the original verifier
+specification, including its typos, inconsistent spacing, and curly '
+quote glyph, so the transcription stays diffable against that source
+rather than a paraphrase. <Question>/<Solution> placeholders become the
+Python format-string placeholders {task}/{candidate}, filled in via
+prompt.format(task=..., candidate=...).
 
-Every AV falls into one of three strategies by its *instruction text*, not
+Every AV falls into one of three strategies by its instruction text, not
 always its title (see the MMLU-AV1 note below):
 
     direct        max_new_tokens=128   "Respond with ONLY ... Do not provide
@@ -18,16 +18,16 @@ always its title (see the MMLU-AV1 note below):
     step_by_step  max_new_tokens=1024  "Go over each step ..." (iterates the
                                          candidate's own steps)
 
-Every subset has exactly 4 AVs: AV1 is always ``direct``; MATH-S1/MMLU-S1 are
-otherwise 2 ``reasoning`` + 1 ``step_by_step``; MATH-S2/MMLU-S2 are otherwise
-1 ``reasoning`` + 2 ``step_by_step``. The verdict marker every prompt itself
-specifies is ``'FINAL VERIFICATION ANSWER: True'`` / ``'...: False'``.
+Every subset has exactly 4 AVs: AV1 is always direct; MATH-S1/MMLU-S1 are
+otherwise 2 reasoning + 1 step_by_step; MATH-S2/MMLU-S2 are otherwise 1
+reasoning + 2 step_by_step. The verdict marker every prompt itself
+specifies is 'FINAL VERIFICATION ANSWER: True' / '...: False'.
 
-**Transcription trap**: both MMLU subsets' AV1 is titled "General
-correctness, Step-by-step" in the original spec, but its instruction text is
-byte-identical to the ``direct`` prompt every other subset's AV1 uses. This
+Transcription trap: both MMLU subsets' AV1 is titled "General correctness,
+Step-by-step" in the original spec, but its instruction text is
+byte-identical to the direct prompt every other subset's AV1 uses. This
 module classifies by instruction text, not title, so it is correctly
-``strategy="direct"`` here — see ``test_mav.py``'s explicit pin on this.
+strategy="direct" here; see test_mav.py's explicit pin on this.
 
 Connection to the project WPs
 ------------------------------
@@ -164,7 +164,7 @@ _MMLU_S2_AV3_INSTRUCTIONS = (
 
 
 # ---------------------------------------------------------------------------
-# MAV_ASPECTS — {dataset: {aspect_id: {prompt, strategy, max_new_tokens}}}
+# MAV_ASPECTS: {dataset: {aspect_id: {prompt, strategy, max_new_tokens}}}
 # ---------------------------------------------------------------------------
 
 def _aspect(preamble: str, instructions: str, strategy: str) -> dict:
@@ -187,11 +187,9 @@ MAV_ASPECTS: dict[str, dict[str, dict]] = {
         "math-s2-av4": _aspect(_MATH_PREAMBLE, _MATH_STEP_BY_STEP_MATH_CORRECTNESS_INSTRUCTIONS, "step_by_step"),
     },
     "mmlu": {
-        # AV1 is titled "General correctness, Step-by-step" in BOTH MMLU
-        # subsets, but its instruction text is byte-identical to the
-        # direct/short-answer prompt every other subset's AV1 uses — this
-        # module classifies by instruction text, not title (see module
-        # docstring), so it is correctly "direct" here.
+        # AV1 is titled "General correctness, Step-by-step" in both MMLU
+        # subsets, but its text is byte-identical to the direct prompt
+        # (classified by text, not title; see module docstring).
         "mmlu-s1-av1": _aspect(_MMLU_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct"),
         "mmlu-s1-av2": _aspect(_MMLU_PREAMBLE, _MMLU_S1_AV2_INSTRUCTIONS, "reasoning"),
         "mmlu-s1-av3": _aspect(_MMLU_PREAMBLE, _MMLU_S1_AV3_INSTRUCTIONS, "reasoning"),
@@ -228,16 +226,15 @@ _FALLBACK_RE = re.compile(r"\b(True|False|Yes|No)\b", re.IGNORECASE)
 
 
 def parse_verdict(text: str) -> Optional[bool]:
-    """Parse a verifier's raw output into ``True``/``False``/``None``.
+    """Parse a verifier's raw output into True/False/None.
 
-    Strips a leading ``<think>...</think>`` block, then takes the **last**
-    ``FINAL VERIFICATION ANSWER:\\s*(True|False)`` marker (case-insensitive,
-    tolerant of straight ``'`` or curly ``'``/``‘`` quoting around
-    the value — the source prompts use curly quotes, but a
-    smaller verifier may echo straight quotes instead). Falls back to the
-    last standalone ``True``/``False``/``Yes``/``No`` if the exact marker is
-    missing (a smaller verifier may drift off-format). Anything else, or
-    empty text, is ``None`` — scored as *no approval*, never as approval.
+    Strips a leading <think>...</think> block, then takes the last "FINAL
+    VERIFICATION ANSWER: (True|False)" marker (case-insensitive, tolerant
+    of straight or curly quoting; the source prompts use curly quotes but
+    a smaller verifier may echo straight quotes). Falls back to the last
+    standalone True/False/Yes/No if the exact marker is missing (a
+    smaller verifier may drift off-format). Anything else, including
+    empty text, is None: scored as no approval, never as approval.
     """
     if not text:
         return None
@@ -268,18 +265,16 @@ def select_bon_candidate(
 ) -> dict:
     """Score candidates by approval count; ties broken by SC-among-tied.
 
-    Score = number of approving verdicts (``verdict is True``) per
-    candidate, over every approval whose ``candidate_idx`` matches.
-    Unparseable verdicts (``verdict=None``) and disapprovals
-    (``verdict=False``) both score zero — never approval.
+    Score is the number of approving verdicts (verdict is True) per
+    candidate, over every approval whose candidate_idx matches.
+    Unparseable verdicts and disapprovals both score zero, never approval.
 
-    A tie among the top-scoring candidates is broken by grouping *only the
-    tied candidates'* answers via ``spec.equiv``
-    (:func:`utils.voting.group_equivalent`, the same union-find grouper SC
-    uses) — the largest resulting equivalence class wins (the tied
-    candidates that most agree with each other), with any further tie
-    (equal-size classes, or every tied candidate abstaining) broken by a
-    uniform random draw from the shared *rng*.
+    A tie among top-scoring candidates is broken by grouping only the
+    tied candidates' answers via spec.equiv (utils.voting.group_equivalent,
+    the same union-find grouper SC uses): the largest resulting
+    equivalence class wins (the tied candidates that most agree with each
+    other), with any further tie broken by a uniform random draw from the
+    shared rng.
     """
     scores = [0] * n_candidates
     for approval in approvals:
@@ -327,11 +322,11 @@ def select_bon_candidate(
 def approval_diagnostics(approvals: Sequence[Mapping[str, Any]], n_candidates: int) -> dict:
     """Per-aspect approval rate and verdict parse rate.
 
-    ``approval_rate`` is the fraction of an aspect's approvals with
-    ``verdict is True`` (unparseable verdicts count as non-approvals, same
-    scoring rule as :func:`select_bon_candidate`) — aspects approving nearly
-    every candidate (>95%) are a sycophancy flag. ``parse_rate`` is the
-    fraction with ``verdict is not None``.
+    approval_rate is the fraction of an aspect's approvals with verdict is
+    True (unparseable verdicts count as non-approvals, same rule as
+    select_bon_candidate); aspects approving nearly every candidate
+    (>95%) are a sycophancy flag. parse_rate is the fraction with
+    verdict is not None.
     """
     by_aspect: dict[str, list[Mapping[str, Any]]] = {}
     for approval in approvals:
@@ -355,11 +350,11 @@ def candidate_correctness(
 ) -> list[bool]:
     """Score every candidate against ground truth, not just the selected one.
 
-    Same ``compare_on``/``score`` rule the run loop already applies to the
-    selected candidate (:class:`utils.voting.BenchmarkSpec`), applied to all
-    N candidates. Pure CPU comparison — every candidate is already
-    generated/replayed — so this costs nothing and is the basis for the
-    oracle/recovery and verifier-quality-vs-ground-truth metrics below.
+    Same compare_on/score rule the run loop already applies to the selected
+    candidate (`utils.voting.BenchmarkSpec`), applied to all N candidates.
+    Pure CPU comparison since every candidate is already generated/replayed,
+    so this is the basis for the oracle/recovery and verifier-quality
+    metrics below.
     """
     compare_values = [
         sample["answer"] if spec.compare_on == "answer" else sample["parsed_output"]
@@ -369,21 +364,20 @@ def candidate_correctness(
 
 
 def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict:
-    """Per-aspect verifier accuracy against ground truth (not just approval rate).
+    """Per-aspect verifier accuracy against ground truth, not just approval rate.
 
-    :func:`approval_diagnostics` only measures how often an aspect approves;
-    this measures whether it is *right* to approve — treating
-    ``verdict is True`` as a prediction that the candidate is actually
-    correct (``approval["candidate_correct"]``, attached per-approval by the
-    caller via :func:`candidate_correctness`). This is the counterpart to the
-    sycophancy flag: an aspect approving >95% of candidates could be a
-    genuinely strong verifier (if those candidates are mostly correct) or a
-    rubber stamp (if they aren't) — ``approval_rate`` alone can't tell them
-    apart, ``precision``/``recall``/``accuracy`` here can.
+    `approval_diagnostics` only measures how often an aspect approves; this
+    measures whether it is right to approve, treating `verdict is True` as a
+    prediction that the candidate is actually correct
+    (`approval["candidate_correct"]`, attached per-approval by the caller via
+    `candidate_correctness`). Distinguishes a genuinely strong verifier from
+    a rubber stamp when approval_rate alone can't.
 
-    Returns, per ``aspect_id``: ``{precision, recall, accuracy, n}``.
-    ``precision``/``recall`` are ``None`` when undefined (no approvals, or no
-    actually-correct candidates were ever seen by that aspect).
+    Returns
+    -------
+    dict
+        Per aspect_id: precision, recall, accuracy, n. precision/recall are
+        None when undefined (no approvals, or no correct candidates seen).
     """
     by_aspect: dict[str, list[Mapping[str, Any]]] = {}
     for approval in approvals:
@@ -416,15 +410,14 @@ def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict
 def oracle_and_recovery(records: Sequence[Mapping[str, Any]]) -> dict:
     """Oracle upper bound and recovery rate for a completed BoN-MAV run.
 
-    ``oracle_accuracy`` is the fraction of problems where at least one of
-    the N replayed candidates is correct — the best any verifier, however
-    perfect, could achieve, since BoN-MAV only *selects* among existing
-    candidates, never generates a new answer. ``recovery_rate`` isolates
-    selection quality from candidate quality: of the problems where a
-    correct candidate existed at all, what fraction did the verifier
-    actually select? Each record must carry ``candidate_correct`` (from
-    :func:`candidate_correctness`) and ``correct`` (the selected candidate's
-    own correctness, already computed by every BoN-MAV notebook).
+    oracle_accuracy is the fraction of problems where at least one of the N
+    replayed candidates is correct, the best any verifier could achieve
+    since BoN-MAV only selects among existing candidates. recovery_rate
+    isolates selection quality from candidate quality: of the problems where
+    a correct candidate existed, what fraction did the verifier actually
+    select? Each record must carry candidate_correct (from
+    `candidate_correctness`) and correct (the selected candidate's own
+    correctness, already computed by every BoN-MAV notebook).
     """
     n_recoverable = 0
     n_recovered = 0

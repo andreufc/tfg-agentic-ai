@@ -1,5 +1,5 @@
 """
-logging_utils.py — Weights & Biases experiment tracking wrappers.
+logging_utils.py - Weights & Biases experiment tracking wrappers.
 
 Thin helpers to initialise W&B runs and log metrics consistently
 across all notebooks in the project.
@@ -47,9 +47,9 @@ def init_wandb(
     config : dict | None
         Hyperparameters / metadata to log.
     project : str | None
-        W&B project name. Defaults to the ``WANDB_PROJECT`` env var, or
-        else ``"agentic-collab"`` on Colab/Kaggle and ``"dev-agentic-collab"``
-        locally — keeping ad-hoc local runs out of the real project.
+        W&B project name. Defaults to the WANDB_PROJECT env var, or else
+        "agentic-collab" on Colab/Kaggle and "dev-agentic-collab" locally,
+        keeping ad-hoc local runs out of the real project.
     tags : list[str] | None
         Tags to attach to the run.
     notes : str | None
@@ -75,19 +75,16 @@ def define_wandb_chart_only_metrics(
 ) -> None:
     """Mark per-sample metric prefixes as chart-only (no summary).
 
-    By default, W&B automatically promotes the **last** logged value
-    of every metric key into run.summary.  For per-sample metrics
-    (e.g. gsm8k_sample/*, mmlu_sample/*, math_sample/*) this clutters the
-    summary with a single, non-representative 0/1 value.
-
-    Calling this function right after :func:`init_wandb` tells W&B
-    to keep those keys in the **history** (charts) only.
+    W&B by default promotes the last logged value of every metric key into
+    run.summary. For per-sample metrics this clutters the summary with a
+    single, non-representative 0/1 value. Call this right after init_wandb
+    to keep those keys in the history (charts) only.
 
     Parameters
     ----------
     prefixes : list[str] | None
-        Glob-style metric prefixes to exclude from summary.
-        Defaults to ``["gsm8k_sample/*", "mmlu_sample/*", "math_sample/*"]``.
+        Glob-style metric prefixes to exclude from summary. Defaults to
+        ["gsm8k_sample/*", "mmlu_sample/*", "math_sample/*"].
     """
     if prefixes is None:
         prefixes = ["gsm8k_sample/*", "mmlu_sample/*", "math_sample/*"]
@@ -122,28 +119,27 @@ def log_per_problem_means(
 ) -> None:
     """Log one per-sample history point per problem, averaged over reps.
 
-    Protocols that repeat the evaluation (MAJ runs ``N_REPS`` reps per
-    problem) must still emit a single per-sample series indexed by problem, so
-    their charts line up on the implicit ``_step`` axis with single-rep
-    protocols such as BoN-MAV.  Each ``(N, m)`` matrix is collapsed to its
-    ``N`` per-problem means via :func:`utils.statistics.per_problem_means`
-    and emitted as one ``wandb.log`` at ``step=problem_id``.
+    Protocols that repeat the evaluation (MAJ runs N_REPS reps per problem)
+    must still emit a single per-sample series indexed by problem, so their
+    charts line up on the implicit _step axis with single-rep protocols
+    such as BoN-MAV. Each (N, m) matrix is collapsed to its N per-problem
+    means via utils.statistics.per_problem_means and emitted as one
+    wandb.log at step=problem_id.
 
-    Call once, after the evaluation loops and before any other ``wandb.log``
-    in the run: an earlier history write pushes ``_step`` past ``problem_id``
-    and W&B then rejects the points.
+    Call once, after the evaluation loops and before any other wandb.log
+    in the run: an earlier history write pushes _step past problem_id and
+    W&B then rejects the points.
 
     Parameters
     ----------
     prefix : str
-        Metric namespace without trailing slash, e.g. ``"math500_sample"``.
+        Metric namespace without trailing slash, e.g. "math500_sample".
     matrices : Mapping[str, np.ndarray]
-        Metric name -> ``(n_problems, n_reps)`` matrix.  All matrices must
-        share the same ``n_problems``.
+        Metric name -> (n_problems, n_reps) matrix. All matrices must
+        share the same n_problems.
     rounding : Mapping[str, int] | None
-        Decimal places per metric name.  Defaults to
-        :data:`PER_SAMPLE_ROUNDING`; names absent from the mapping are logged
-        unrounded.
+        Decimal places per metric name. Defaults to PER_SAMPLE_ROUNDING;
+        names absent from the mapping are logged unrounded.
     """
     if not matrices:
         raise ValueError("matrices must contain at least one metric.")
@@ -184,25 +180,22 @@ def log_stat_summary(
     stat: dict,
     keys: list[str] | None = None,
 ) -> None:
-    """Push a point estimate + CI (and ci_method) into ``wandb.summary``.
+    """Push a point estimate + CI (and ci_method) into wandb.summary.
 
     Parameters
     ----------
     prefix : str
-        Namespace prefix, e.g. ``"acc"``, ``"latency"``,
-        ``"overhead_latency"``, ``"vram"``.  Each key is logged as
-        ``"{prefix}/{key}"``.
+        Namespace prefix, e.g. "acc", "latency", "overhead_latency",
+        "vram". Each key is logged as "{prefix}/{key}".
     stat : dict
-        Result dict from any ``*_statistics`` function.
+        Result dict from any *_statistics function.
     keys : list[str] | None
-        Subset of keys to log.  Defaults to the common set:
-        ``mean`` (or ``p_hat``/``geometric_mean``/``mean_diff``/
-        ``mean_of_ratios``), ``ci_lower``, ``ci_upper``, ``ci_method``.
-        ``mean_peak`` (from ``vram_statistics``) is a special case,
-        defaulting to ``peak_ci_lower``/``peak_ci_upper`` instead.
+        Subset of keys to log. Defaults to the common set: mean (or
+        p_hat/geometric_mean/mean_diff/mean_of_ratios), ci_lower,
+        ci_upper, ci_method. mean_peak (from vram_statistics) is a
+        special case, defaulting to peak_ci_lower/peak_ci_upper instead.
     """
     if keys is None:
-        # Pick the primary point-estimate key present in the dict.
         # mean_peak (vram_statistics) uses peak_ci_lower/peak_ci_upper
         # instead of ci_lower/ci_upper, to disambiguate from mean_avg.
         if "mean_peak" in stat:

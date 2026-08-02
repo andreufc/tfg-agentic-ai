@@ -1,5 +1,5 @@
 """
-agents.py — LangChain / LangGraph agent construction helpers.
+agents.py: LangChain / LangGraph agent construction helpers.
 
 Provides factory functions to build the Society-of-Minds agents
 and collaboration graphs used in the thesis experiments.
@@ -26,7 +26,7 @@ from transformers import pipeline as hf_pipeline  # type: ignore
 
 
 def _seed_all(seed: int) -> None:
-    """Seed Python's ``random``, NumPy (if available), and PyTorch (CPU and all
+    """Seed Python's `random`, NumPy (if available), and PyTorch (CPU and all
     CUDA devices) so a run's full sequence of stochastic generation calls is
     reproducible.
     """
@@ -71,40 +71,33 @@ def build_hf_langchain_llm(
     top_k : int
         Top-k sampling parameter.
     return_full_text : bool
-        If ``False`` (default), only the generated continuation is
-        returned; if ``True``, the prompt is prepended to the output.
+        If `False` (default), only the generated continuation is returned;
+        if `True`, the prompt is prepended to the output.
     seed : int | None
-        If given, seeds all RNG sources via ``_seed_all`` before the pipeline
-        is created, for reproducible generation. ``None`` (default) keeps
-        stochastic behaviour.
+        If given, seeds all RNG sources via `_seed_all` before the pipeline
+        is created, for reproducible generation.
     batch_size : int
-        Number of sequences processed per forward pass (default ``1``).
-        Must stay at 1 for all experiments so that latency, throughput,
-        and GPU-utilization metrics remain attributable to individual
-        problems and both MAS and baseline are measured under identical
-        hardware load. Only raise this for a dedicated sustained-
-        throughput ceiling experiment, never for the main comparison.
+        Sequences per forward pass. Must stay at 1 for all experiments so
+        latency, throughput, and GPU-utilization metrics stay attributable
+        to individual problems under identical hardware load; only raise
+        it for a dedicated throughput-ceiling experiment.
     chat_template : bool
-        If ``True`` (default), the rendered prompt is wrapped as a single user
-        message and the HF pipeline applies the model's instruct chat template
-        internally (``apply_chat_template(tokenize=True)``) before generating.
+        If `True` (default), the prompt is sent as a chat message and the
+        pipeline applies the model's instruct chat template internally.
         Instruct models expect this; without it, weaker models (e.g.
-        Ministral-3-3B) frequently emit an immediate EOS and return empty
-        outputs. Requires the tokenizer to expose a chat template — base models
-        without one must use ``chat_template=False``.
+        Ministral-3-3B) often emit an immediate EOS and return empty output.
+        Base models without a chat template must use `chat_template=False`.
     system_prompt : str | None
-        If given (chat path only), prepended as a ``system`` message before the
-        user turn. Used for reasoning models that ship a recommended system
-        prompt (e.g. Ministral-3 Reasoning's ``SYSTEM_PROMPT.txt``, which sets up
-        the ``[THINK]`` protocol). Ignored when ``chat_template=False``.
+        Chat path only. Prepended as a system message before the user turn,
+        for reasoning models that ship a recommended system prompt (e.g.
+        Ministral-3 Reasoning's `SYSTEM_PROMPT.txt`, the `[THINK]` protocol).
 
     Returns
     -------
     Runnable
-        A LangChain Runnable. With ``chat_template=True`` this is a
-        ``RunnableLambda`` that feeds the prompt to the pipeline as a chat
-        message (template applied internally). With ``chat_template=False`` it
-        is a ``HuggingFacePipeline`` fed the raw prompt.
+        With `chat_template=True`, a `RunnableLambda` feeding the pipeline a
+        chat message. With `chat_template=False`, a `HuggingFacePipeline`
+        fed the raw prompt.
     """
     if seed is not None:
         _seed_all(seed)
@@ -124,28 +117,24 @@ def build_hf_langchain_llm(
     )
 
     if not chat_template:
-        # Base/non-instruct path: feed the raw rendered prompt straight to the
-        # pipeline (no chat template applied).
+        # Base/non-instruct path: raw rendered prompt straight to the pipeline.
         return HuggingFacePipeline(pipeline=pipe)
 
     # Instruct path: pass a chat list so the pipeline applies the chat template
-    # internally (apply_chat_template(tokenize=True, return_dict=True)), getting
-    # the instruct control tokens to the model without a string round-trip. An
-    # optional system message precedes the user turn (reasoning models' recommended
-    # prompt). Correct decoding requires the tokenizer to be the mistral-common
-    # backend (see load_model_and_tokenizer) — a plain LlamaTokenizer garbles
-    # spaces / emits byte markers.
+    # internally, getting instruct control tokens to the model without a string
+    # round-trip. Correct decoding requires the mistral-common tokenizer backend
+    # (see load_model_and_tokenizer); a plain LlamaTokenizer garbles spacing.
     base_messages = (
         [{"role": "system", "content": system_prompt}] if system_prompt else []
     )
 
     def _generate(prompt: Any) -> str:
-        # The upstream PromptTemplate yields a StringPromptValue, not a str.
+        # PromptTemplate yields a StringPromptValue, not a str.
         text = prompt.to_string() if hasattr(prompt, "to_string") else str(prompt)
         messages = base_messages + [{"role": "user", "content": text}]
         generated_text = pipe(messages)[0]["generated_text"]
-        # return_full_text=True on a chat yields the full message list rather
-        # than a string — normalise to the assistant turn's text.
+        # return_full_text=True on a chat yields the full message list;
+        # normalize to the assistant turn's text.
         if isinstance(generated_text, list):
             return generated_text[-1]["content"]
         return generated_text

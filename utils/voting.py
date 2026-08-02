@@ -1,19 +1,18 @@
 """
-voting.py — Plurality voting and the Self-Consistency (SC) ladder.
+voting.py: Plurality voting and the Self-Consistency (SC) ladder.
 
 Pure aggregation logic shared by Self-Consistency, Majority Voting and
 BoN-MAV, unified across benchmarks via :class:`BenchmarkSpec`: MATH-500's
 LaTeX-equivalence grouping and MMLU's exact-letter grouping are two
-configurations of the *same* grouping/voting path (:func:`group_generations`
+configurations of the same grouping/voting path (:func:`group_generations`
 + :func:`majority_vote`), not two separate implementations. Answer parsing
-and comparison stay in ``utils.evaluation`` — this module only groups and
-votes.
+and comparison stay in `utils.evaluation`; this module only groups and votes.
 
-Self-Consistency's "vote once, re-derive every k" property — grouping a
+Self-Consistency's "vote once, re-derive every k" property (grouping a
 problem's generations costs the same whether you read off SC@1 or the whole
-SC@1/3/4/5 ladder — now rests on ``utils.evaluation``'s memoized
-``math_equiv``/``mmlu_match`` rather than on a precomputed grouping passed
-between callers: every subset groups its own members independently (see
+SC@1/3/4/5 ladder) rests on `utils.evaluation`'s memoized `math_equiv` /
+`mmlu_match` rather than on a precomputed grouping passed between callers:
+every subset groups its own members independently (see
 :func:`self_consistency`), and the cache absorbs the repeated pairwise
 comparisons.
 
@@ -76,32 +75,32 @@ class ProblemSCResult(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# BenchmarkSpec — the one place a benchmark's answer handling is defined
+# BenchmarkSpec: the one place a benchmark's answer handling is defined
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class BenchmarkSpec:
     """Binds a benchmark's answer extraction, equivalence, and scoring rules.
 
-    ``compare_on`` is the only axis of variation between benchmarks in the
-    grouping/voting path: MATH-500 groups on the *full* candidate text
-    (``math_verify`` is a more robust extractor than any pre-cut substring —
-    see ``evaluation.extract_math_prediction``'s docstring), MMLU and GSM8K
+    `compare_on` is the only axis of variation between benchmarks in the
+    grouping/voting path: MATH-500 groups on the full candidate text
+    (`math_verify` is a more robust extractor than any pre-cut substring,
+    see `evaluation.extract_math_prediction`'s docstring), MMLU and GSM8K
     group on the already-extracted prediction. Keeping "what you group on"
-    (``compare_on`` / ``equiv``) separate from "what you score against the
-    ground truth" (``score`` / ``get_truth``) means they can never be
-    silently coupled, even where they happen to use the same function.
+    (`compare_on` / `equiv`) separate from "what you score against the
+    ground truth" (`score` / `get_truth`) means they can never be silently
+    coupled, even where they happen to use the same function.
 
-    ``render_task(item)`` returns exactly the string substituted into the
-    notebook prompt template's task placeholder — all problem content
+    `render_task(item)` returns exactly the string substituted into the
+    notebook prompt template's task placeholder: all problem content
     (including, for MMLU, the rendered answer choices), no instruction
     wording. The generation loop stores this same string as the record's
-    ``task``; ``validate_alignment`` re-runs the identical callable against
-    the locally loaded dataset and compares the result directly against
-    that stored ``task``. Using one shared function for "what got shown to
-    the model", "what got persisted" and "what gets re-checked for
-    validation" makes the three provably agree — there is no second,
-    divergent place to describe a benchmark's prompt.
+    `task`; `validate_alignment` re-runs the identical callable against the
+    locally loaded dataset and compares the result directly against that
+    stored `task`. Using one shared function for what got shown to the
+    model, what got persisted, and what gets re-checked for validation
+    makes the three provably agree, with no second, divergent place to
+    describe a benchmark's prompt.
     """
 
     name: str
@@ -151,7 +150,7 @@ BENCHMARK_SPECS: dict[str, BenchmarkSpec] = {
 
 
 def get_benchmark_spec(name: str) -> BenchmarkSpec:
-    """Look up a :class:`BenchmarkSpec` by dataset name (e.g. ``DATASET``)."""
+    """Look up a :class:`BenchmarkSpec` by dataset name (e.g. `DATASET`)."""
     try:
         return BENCHMARK_SPECS[name]
     except KeyError:
@@ -161,7 +160,7 @@ def get_benchmark_spec(name: str) -> BenchmarkSpec:
 
 
 # ---------------------------------------------------------------------------
-# Grouping — one implementation for every benchmark
+# Grouping: one implementation for every benchmark
 # ---------------------------------------------------------------------------
 
 def group_equivalent(
@@ -170,13 +169,12 @@ def group_equivalent(
 ) -> list[int]:
     """Union-find grouping of *items* under a pairwise equivalence predicate.
 
-    ``None`` entries are abstentions and always get label ``-1`` (a shared
-    placeholder, not a genuine equivalence class — it must never win a vote,
-    so it is never merged into any group). ``equiv`` need only be symmetric;
-    transitivity (``a≡b``, ``b≡c`` ⇒ one class with ``c``) is imposed by the
-    union-find merge, which is a deliberate approximation when ``equiv``
-    itself is not perfectly transitive (e.g. ``math_verify`` on pathological
-    LaTeX).
+    `None` entries are abstentions and always get label `-1` (a shared
+    placeholder, not a genuine equivalence class: it must never win a vote,
+    so it is never merged into any group). `equiv` need only be symmetric;
+    transitivity (a=b, b=c implies one class with c) is imposed by the
+    union-find merge, a deliberate approximation when `equiv` itself is not
+    perfectly transitive (e.g. `math_verify` on pathological LaTeX).
     """
     n = len(items)
     labels = [-1] * n
@@ -218,15 +216,18 @@ def group_generations(
     """Group a set of full model outputs into equivalence classes, per *spec*.
 
     The single grouping path for every benchmark: predictions are extracted
-    via ``spec.extract`` (``None`` = abstention — no extractable answer —
-    which always gets label ``-1``, uniformly across benchmarks); the values
-    actually compared for equivalence — full text or extracted prediction,
-    per ``spec.compare_on`` — are grouped via :func:`group_equivalent` using
-    ``spec.equiv``.
+    via `spec.extract` (`None` means abstention, no extractable answer,
+    which always gets label `-1` uniformly across benchmarks); the values
+    actually compared for equivalence (full text or extracted prediction,
+    per `spec.compare_on`) are grouped via :func:`group_equivalent` using
+    `spec.equiv`.
 
-    Returns ``(labels, predictions)`` — ``predictions`` is exposed so
-    callers can build display output (e.g. a vote's ``winner_pred``) without
-    re-extracting.
+    Returns
+    -------
+    tuple[list[int], list[str | None]]
+        `(labels, predictions)`; `predictions` is exposed so callers can
+        build display output (e.g. a vote's `winner_pred`) without
+        re-extracting.
     """
     predictions = [spec.extract(a) if a else None for a in answers]
     if spec.compare_on == "answer":
@@ -247,11 +248,11 @@ def group_generations(
 def majority_vote(labels: Sequence[int], *, rng) -> VoteResult:
     """Plurality vote over integer equivalence-class labels.
 
-    ``-1`` is reserved for abstentions and is excluded from the count — an
-    abstention-only input yields ``winner_idx=None``. Ties among the
-    top-voted labels are broken by a uniform random choice drawn from *rng*
-    — callers share one ``random.Random`` instance across an entire run
-    (see :func:`run_self_consistency`), so re-running from the same seed
+    `-1` is reserved for abstentions and is excluded from the count; an
+    abstention-only input yields `winner_idx=None`. Ties among the top-voted
+    labels are broken by a uniform random choice drawn from *rng*. Callers
+    share one `random.Random` instance across an entire run (see
+    :func:`run_self_consistency`), so re-running from the same seed
     reproduces every tie-break exactly, in the order the votes are taken.
     """
     n = len(labels)
@@ -285,7 +286,7 @@ def majority_vote(labels: Sequence[int], *, rng) -> VoteResult:
 
 
 # ---------------------------------------------------------------------------
-# Self-Consistency — one entry point per problem / per run
+# Self-Consistency: one entry point per problem / per run
 # ---------------------------------------------------------------------------
 
 def self_consistency(
@@ -298,16 +299,15 @@ def self_consistency(
 ) -> ProblemSCResult:
     """Run the SC ladder for one problem's generations.
 
-    ``records`` holds one generation record per ``gen_id`` (index = gen_id),
-    each with an ``"answer"`` field (the full model output). Every
-    generation is scored against *ground_truth* exactly once via
-    ``spec.score`` (shares ``utils.evaluation``'s parse cache). For each
-    ``k`` in ``graphs_by_k`` (built once by :func:`run_self_consistency`,
-    reused across every problem), every size-``k`` subset's *own* compiled
-    replay graph is invoked — it groups only that subset's members, so
-    transitivity from generations outside the subset never leaks in — and
-    the vote's winner is mapped back through the subset's ``combo`` to a
-    ``gen_id``.
+    `records` holds one generation record per `gen_id` (index = gen_id),
+    each with an `"answer"` field (the full model output). Every generation
+    is scored against *ground_truth* exactly once via `spec.score` (shares
+    `utils.evaluation`'s parse cache). For each `k` in `graphs_by_k` (built
+    once by :func:`run_self_consistency`, reused across every problem),
+    every size-`k` subset's own compiled replay graph is invoked (it groups
+    only that subset's members, so transitivity from generations outside
+    the subset never leaks in) and the vote's winner is mapped back through
+    the subset's `combo` to a `gen_id`.
     """
     predictions = [spec.extract(record["answer"]) for record in records]
     compare_values = (
@@ -367,19 +367,19 @@ def run_self_consistency(
 ) -> dict[int, ProblemSCResult]:
     """Run the full SC ladder over a fixed problem set.
 
-    Compiles **one replay graph per distinct subset** of the ladder — e.g.
-    21 graphs for the full ``k ∈ {1,3,4,5}`` ladder over 5 generators
-    (``C(5,1)+C(5,3)+C(5,4)+C(5,5) = 5+10+5+1``) — once, up front,
-    independent of problem count: each replay node indexes *store* by
-    ``(problem_id, gen_id)`` at invoke time, so the same compiled graph
-    serves every problem. *rng* is a single seeded ``random.Random`` shared
-    across every vote in the run (see :func:`majority_vote`).
+    Compiles one replay graph per distinct subset of the ladder (e.g. 21
+    graphs for the full k in {1,3,4,5} ladder over 5 generators,
+    `C(5,1)+C(5,3)+C(5,4)+C(5,5) = 5+10+5+1`) once, up front, independent of
+    problem count: each replay node indexes *store* by `(problem_id,
+    gen_id)` at invoke time, so the same compiled graph serves every
+    problem. *rng* is a single seeded `random.Random` shared across every
+    vote in the run (see :func:`majority_vote`).
 
-    ``model_key``/``model_id`` identify the single model this store's
-    generations came from (an SC store holds exactly one model — see
-    ``utils.persistence.build_generation_store``'s invariant) and are
+    `model_key` / `model_id` identify the single model this store's
+    generations came from (an SC store holds exactly one model, see
+    `utils.persistence.build_generation_store`'s invariant) and are
     required explicitly rather than defaulted, since a meaningless default
-    would silently leak into every replayed ``AgentSample``.
+    would silently leak into every replayed `AgentSample`.
     """
     from utils.graphs import AgentSpec, build_majority_voting_graph
 
@@ -421,45 +421,43 @@ def compose_generation_metrics(
 ) -> dict:
     """Compute composition shared by every L1 protocol: SC, MAJ, BoN-MAV.
 
-    Each call is a persisted generation record, an ``AgentSample`` (MAJ
-    candidates), or an ``Approval`` (BoN-MAV verifier calls) — all three
-    carry ``model_key`` plus the same metric fields, so one function serves
-    every protocol. Latency and token counts (input/output/total) always sum
-    across every call — the honest total wall time / token spend, whether
-    the calls ran sequentially (SC, one resident model) or as a heterogeneous
-    ensemble (MAJ/BoN-MAV, several models resident at once).
+    Each call is a persisted generation record, an `AgentSample` (MAJ
+    candidates), or an `Approval` (BoN-MAV verifier calls); all three carry
+    `model_key` plus the same metric fields, so one function serves every
+    protocol. Latency and token counts always sum across every call, the
+    honest total wall time / token spend, whether the calls ran sequentially
+    (SC, one resident model) or as a heterogeneous ensemble (MAJ/BoN-MAV,
+    several models resident at once).
 
-    ``vram_rule`` selects how the per-call ``gpu_peak_mb`` values combine
-    into one ensemble-level peak — picking the wrong one silently
-    mis-measures VRAM:
-
-    * ``"sum_per_model"`` (default) — sum, over distinct ``model_key``, of
-      that model's max per-call peak. Valid only when each call was measured
-      with a single model resident (replayed records, or one-at-a-time
-      sequential runs); reduces to a plain max when every call shares one
-      ``model_key``.
-    * ``"coresident_peak"`` — a single ``max()`` over every call's
-      ``gpu_peak_mb``. Use for calls from models genuinely loaded together
-      (a live ensemble): each such peak already reflects the whole
-      co-resident footprint, so summing them (the other rule) over-counts.
-
-    ``tokens_per_s_rule`` selects the one axis that genuinely differs by
-    protocol, since the two aggregation stories mean different things:
-
-    * ``"recomputed"`` (default) — ``Σoutput_tokens / Σlatency_s``, the
-      *sustained* rate of one resident model working through several calls
-      in sequence (SC's own story: same model, one generator after another).
-    * ``"mean"`` — the mean of each call's own rate. For a heterogeneous
-      ensemble (MAJ/BoN-MAV) there is no single shared per-token cost to
-      average over, so summing totals would let one slow model drag down a
-      fast one's own rate; the calls' rates are averaged instead.
+    Parameters
+    ----------
+    calls : Sequence[Mapping]
+        Per-call records carrying `model_key` and the metric fields.
+    tokens_per_s_rule : {"recomputed", "mean"}
+        The one axis that genuinely differs by protocol. `"recomputed"`
+        (default) computes `sum(output_tokens) / sum(latency_s)`, the
+        sustained rate of one resident model working through several calls
+        in sequence (SC's story). `"mean"` averages each call's own rate:
+        for a heterogeneous ensemble (MAJ/BoN-MAV) there is no shared
+        per-token cost, so summing totals would let one slow model drag
+        down a fast one's rate.
+    vram_rule : {"sum_per_model", "coresident_peak"}
+        How per-call `gpu_peak_mb` values combine into one ensemble-level
+        peak; picking the wrong one silently mis-measures VRAM.
+        `"sum_per_model"` (default) sums, over distinct `model_key`, that
+        model's max per-call peak; valid only when each call was measured
+        with a single model resident (replayed records, or one-at-a-time
+        sequential runs). `"coresident_peak"` takes a single max over every
+        call's `gpu_peak_mb`, for calls from models genuinely loaded
+        together, since each such peak already reflects the whole
+        co-resident footprint and summing them would over-count.
 
     Raises
     ------
     KeyError
-        If any call is missing ``model_key`` or one of the metric fields.
+        If any call is missing `model_key` or one of the metric fields.
     ValueError
-        If ``calls`` is empty, or ``vram_rule``/``tokens_per_s_rule`` is
+        If `calls` is empty, or `vram_rule` / `tokens_per_s_rule` is
         unrecognized.
     """
     if not calls:
@@ -482,7 +480,7 @@ def compose_generation_metrics(
         raise ValueError(f"Unknown vram_rule {vram_rule!r}; expected 'sum_per_model' or 'coresident_peak'")
 
     if tokens_per_s_rule == "recomputed":
-        # Unrounded — this is a composed value from summed totals, not a
+        # Unrounded: this is a composed value from summed totals, not a
         # single logged sample, so it should not carry tokens_per_second's
         # own display rounding (see utils.instrumentation.tokens_per_second).
         tokens_per_s = tokens_per_second(output_tokens, latency_s, round_dp=None)

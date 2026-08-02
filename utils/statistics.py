@@ -1,5 +1,5 @@
 """
-statistics.py — Statistically consistent, unbiased estimators for
+statistics.py: statistically consistent, unbiased estimators for
 clustered experimental data (repeated seeds per problem).
 
 Connection to the project WPs
@@ -11,7 +11,7 @@ Connection to the project WPs
 Provides:
     Shared reduction:
     - per_problem_means:                Validate (N, m) and reduce to the N
-                                        per-problem means — the unit of analysis
+                                        per-problem means, the unit of analysis
                                         for every estimator here and for the
                                         per-sample W&B series
 
@@ -26,32 +26,32 @@ Provides:
     - time_statistics / token_statistics:
                                         Nonparametric summary for any (N, m)
                                         time or token-count matrix, built on the
-                                        shared ``_metric_statistics`` helper;
+                                        shared _metric_statistics helper;
                                         CI on per-problem means (BCa bootstrap)
     - overhead_ratio_statistics:        Geometric-mean CI via log-space Student-t
                                         for multiplicative overhead (latency, tokens)
     - overhead_difference_statistics:   Cluster-t CI for additive overhead (VRAM)
     - vram_statistics:                  Cluster-t CI on per-problem peak-VRAM means
 
-    Between-system comparison tests (deferred — not part of per-system scope):
+    Between-system comparison tests (deferred, not part of per-system scope):
     - welch_t_test_metric:              Welch t-test on per-problem means
     - mann_whitney_u_test_metric:       Rank-based distribution-free comparison
 
-All functions expect data as NumPy arrays of shape ``(N, m)`` where
-``N`` = number of problems and ``m`` = number of seeds (repetitions).
+All functions expect data as NumPy arrays of shape (N, m) where
+N = number of problems and m = number of seeds (repetitions).
 
 Unit of analysis
 ----------------
-Every CI and inferential variance is computed on the ``N`` per-problem means,
-never on the flattened ``N×m`` array. The flattened statistics (mean, std,
-percentiles, skewness, …) are retained as *descriptive* diagnostics only.
+Every CI and inferential variance is computed on the N per-problem means,
+never on the flattened N x m array. The flattened statistics (mean, std,
+percentiles, skewness, ...) are retained as descriptive diagnostics only.
 
 Note
 ----
-``print_throughput_report`` is implemented for a forthcoming
-``throughput_statistics`` estimator (tokens/s with mean-of-ratios as the
-canonical value); until that estimator lands, callers must assemble its
-input dict by hand — see the function's docstring for the expected shape.
+print_throughput_report is implemented for a forthcoming
+throughput_statistics estimator (tokens/s with mean-of-ratios as the
+canonical value). Until that estimator lands, callers must assemble its
+input dict by hand: see the function's docstring for the expected shape.
 
 References
 ----------
@@ -70,7 +70,7 @@ from scipy import stats as sp_stats
 
 
 # ---------------------------------------------------------------------------
-# Helpers — per-problem reduction (public) and CI machinery (private)
+# Helpers: per-problem reduction (public) and CI machinery (private)
 # ---------------------------------------------------------------------------
 
 def per_problem_means(arr: np.ndarray) -> np.ndarray:
@@ -94,9 +94,9 @@ def _cluster_t_ci(
 ) -> tuple[float, float]:
     """Two-sided Student-t CI on a 1-D array of per-problem values.
 
-    Computes ``mean ± t_{N-1, alpha/2} * std(ddof=1) / sqrt(N)``.
-    Degenerates to ``(mean, mean)`` when N == 1 or all values are identical.
-    Optionally clips both endpoints into ``clip = (lo, hi)``.
+    Computes mean +/- t_{N-1, alpha/2} * std(ddof=1) / sqrt(N). Degenerates
+    to (mean, mean) when N == 1 or all values are identical. Optionally
+    clips both endpoints into clip = (lo, hi).
     """
     v = np.asarray(values, dtype=float)
 
@@ -131,7 +131,7 @@ def _cluster_bca_ci(
     """BCa bootstrap CI on a 1-D array of per-problem values.
 
     Zero-variance guard: constant input returns (mean, mean) without
-    calling ``sp_stats.bootstrap`` (which would raise on zero-variance data).
+    calling sp_stats.bootstrap, which would raise on zero-variance data.
     """
     v = np.asarray(values, dtype=float)
     mean = float(np.mean(v))
@@ -281,7 +281,7 @@ def accuracy_statistics(
     The primary CI is a Student-t interval on the N per-problem
     accuracy means, clipped to [0, 1]. This correctly treats the
     problem as the unit of analysis.  The DEFF-adjusted Wilson CI from
-    :func:`wilson_ci_clustered` is flattened in under the ``wilson_*``
+    :func:`wilson_ci_clustered` is flattened in under the wilson_*
     keys for comparison.
 
     Parameters
@@ -359,7 +359,8 @@ def _metric_statistics(
     n_bootstrap : int, default 9999
         Number of bootstrap replications.
     bounds : tuple[float, float]|None, default None
-        Used to clamp the CI and compute floor/ceiling fractions if the metric has natural bounds (e.g. [0, 1] for a proportion).
+        Clamps the CI and computes floor/ceiling fractions if the metric
+        has natural bounds (e.g. [0, 1] for a proportion).
 
     Returns
     -------
@@ -437,7 +438,7 @@ def time_statistics(
     """Distribution-free execution time summary with BCa bootstrap CI.
 
     The CI is computed on the N per-problem means (cluster-corrected),
-    not on the flattened N*m array.  Flattened descriptive statistics
+    not on the flattened N*m array. Flattened descriptive statistics
     (mean, std, percentiles) are retained unchanged.
 
     Parameters
@@ -473,13 +474,13 @@ def token_statistics(
 ) -> dict:
     """Nonparametric summary for an (N, m) token-count matrix.
 
-    Thin wrapper over :func:`_metric_statistics` with ``kind="count"``,
-    ensuring the CI is computed on per-problem means.  Call twice —
-    once for ``output_tokens`` and once for ``total_tokens``.
+    Thin wrapper over :func:`_metric_statistics` with kind="count",
+    computing the CI on per-problem means. Call twice: once for
+    output_tokens and once for total_tokens.
 
     Parameters
     ----------
-    values : array-like of shape ``(N, m)``
+    values : array-like of shape (N, m)
         Token count matrix (non-negative integers).
     alpha : float, default 0.05
         Significance level.
@@ -511,15 +512,15 @@ def vram_statistics(
 ) -> dict:
     """Cluster-t CI on per-problem peak-VRAM means.
 
-    ``torch.cuda.max_memory_allocated`` (the authoritative per-run peak)
-    is largely deterministic given the model and sequence length, so a
+    torch.cuda.max_memory_allocated (the authoritative per-run peak) is
+    largely deterministic given the model and sequence length, so a
     Student-t interval on the per-problem means is appropriate.
 
     Parameters
     ----------
-    peak_matrix : array-like of shape ``(N, m)``
-        Per-run peak VRAM in MB (from ``gpu_peak_mem_mb``).
-    avg_matrix : array-like of shape ``(N, m)`` or None
+    peak_matrix : array-like of shape (N, m)
+        Per-run peak VRAM in MB (from gpu_peak_mem_mb).
+    avg_matrix : array-like of shape (N, m) or None
         Per-run average VRAM utilisation in MB (optional).
     alpha : float, default 0.05
         Significance level.
@@ -529,7 +530,7 @@ def vram_statistics(
     dict
         Keys: mean_peak, peak_ci_lower, peak_ci_upper, ci_method, alpha,
         peak_max, peak_percentiles, between_problem_peak_std, n_problems,
-        n_seeds, n_total.  Optional: mean_avg (when avg_matrix is given).
+        n_seeds, n_total. Optional: mean_avg (when avg_matrix is given).
     """
     arr = np.asarray(peak_matrix, dtype=float)
     if arr.ndim != 2:
@@ -587,7 +588,7 @@ def pct_votes_top_statistics(
     :func:`accuracy_statistics`, treating the problem as the unit of
     analysis. No Wilson supplementary CI here: the input is a continuous
     share in [0, 1] (fraction of votes/approvals the winner received),
-    not a binary correctness indicator. Works identically whether ``m``
+    not a binary correctness indicator. Works identically whether m
     (seeds/reps per problem) is 1 (BoN-MAV) or 2 (MAJ).
 
     Parameters
@@ -769,7 +770,7 @@ def overhead_difference_statistics(
 
 
 # ---------------------------------------------------------------------------
-# Between-system comparison tests  (deferred — not per-system scope)
+# Between-system comparison tests (deferred, not per-system scope)
 # ---------------------------------------------------------------------------
 
 def welch_t_test_metric(
@@ -778,16 +779,15 @@ def welch_t_test_metric(
 ) -> dict:
     """Welch t-test comparing per-problem means between two systems.
 
-    .. note::
-        Between-system scope: compares two already-computed per-problem mean
-        vectors (e.g. MAS vs. baseline), unlike the per-system estimators
-        above which take a raw (N, m) matrix.
+    Between-system scope: compares two already-computed per-problem mean
+    vectors (e.g. MAS vs. baseline), unlike the per-system estimators
+    above which take a raw (N, m) matrix.
 
     Parameters
     ----------
     per_problem_means_a : array-like, 1-D
-        Per-problem means for system A, shape (N,) — e.g. the output of
-        ``per_problem_means`` on a raw (N, m) metric matrix.
+        Per-problem means for system A, shape (N,), e.g. the output of
+        per_problem_means on a raw (N, m) metric matrix.
     per_problem_means_b : array-like, 1-D
         Per-problem means for system B.
 
@@ -830,10 +830,8 @@ def mann_whitney_u_test_metric(
 ) -> dict:
     """Rank-based, distribution-free comparison between two systems.
 
-    .. note::
-        **Deferred scope.** This is a *between-system* comparison test and
-        is not part of the per-system estimation scope.  It is kept
-        unchanged for backwards compatibility.
+    Deferred scope: a between-system comparison test, not part of the
+    per-system estimation scope. Kept unchanged for backwards compatibility.
 
     Parameters
     ----------
@@ -841,8 +839,8 @@ def mann_whitney_u_test_metric(
         Per-problem means for system A.
     per_problem_means_b : array-like, 1-D
         Per-problem means for system B.
-    alternative : str, default ``"two-sided"``
-        Passed directly to ``scipy.stats.mannwhitneyu``.
+    alternative : str, default "two-sided"
+        Passed directly to scipy.stats.mannwhitneyu.
 
     Returns
     -------
@@ -852,7 +850,7 @@ def mann_whitney_u_test_metric(
 
     References
     ----------
-    Mann & Whitney (1947), Ann. Math. Statist. 18(1), 50–60.
+    Mann & Whitney (1947), Ann. Math. Statist. 18(1), 50-60.
     """
     a = np.asarray(per_problem_means_a, dtype=float)
     b = np.asarray(per_problem_means_b, dtype=float)
@@ -1047,11 +1045,11 @@ def print_throughput_report(
 ) -> None:
     """Print a formatted throughput (tok/s) report.
 
-    Expects ``result`` with keys: mean, std, cv, ci_lower, ci_upper, ci_method,
+    Expects result with keys: mean, std, cv, ci_lower, ci_upper, ci_method,
     alpha, aggregate, aggregate_ci, percentiles, n_problems, n_seeds, n_total,
-    n_bootstrap — the mean-of-ratios canonical estimate plus the ratio-of-means
+    n_bootstrap: the mean-of-ratios canonical estimate plus the ratio-of-means
     aggregate as a supplementary cross-check (see module docstring note on the
-    forthcoming ``throughput_statistics`` estimator).
+    forthcoming throughput_statistics estimator).
     """
     ci_pct = int(round((1.0 - result["alpha"]) * 100))
     agg_lo, agg_hi = result["aggregate_ci"]

@@ -1,5 +1,5 @@
 """
-config.py — Environment and secrets management.
+config.py: Environment and secrets management.
 
 Loads variables from a .env file (local), Colab userdata (Google Colab),
 or Kaggle Secrets (Kaggle kernels).
@@ -16,18 +16,14 @@ import os
 def load_env(environment: str = "local") -> None:
     """Load environment variables from the appropriate secrets backend.
 
+    Colab reads via `google.colab.userdata`, Kaggle via
+    `kaggle_secrets.UserSecretsClient`, local via a `.env` file (python-dotenv).
+    Tokens end up in `os.environ`.
+
     Parameters
     ----------
     environment : str
-        One of ``"colab"``, ``"kaggle"``, or ``"local"`` (the default).
-
-    Backends
-    --------
-    - **colab**: reads secrets via ``google.colab.userdata``.
-    - **kaggle**: reads secrets via ``kaggle_secrets.UserSecretsClient``.
-    - **local** (default): reads a ``.env`` file using ``python-dotenv``.
-
-    After calling this function, tokens are available via ``os.environ``.
+        One of `"colab"`, `"kaggle"`, or `"local"` (the default).
     """
     try:
         if environment == "colab":
@@ -48,13 +44,13 @@ def load_env(environment: str = "local") -> None:
             print("✅ Secrets loaded from Kaggle Secrets.")
 
         else:
-            # Running locally or in CI
+            # Local or CI
             from dotenv import load_dotenv  # type: ignore
 
             load_dotenv()
             print("✅ Secrets loaded from .env file.")
     except Exception as e:
-        # Fallback to .env
+        # Fall back to .env
         from dotenv import load_dotenv  # type: ignore
         load_dotenv()
         print(f"⚠️ Warning: Error loading secrets: {e}")

@@ -1,38 +1,24 @@
 """
-graphs.py — LangGraph orchestration templates for the L1 protocols.
+graphs.py - LangGraph orchestration templates for the L1 protocols.
 
-One graph template per protocol. This module currently
-provides the Majority Voting template (:func:`build_majority_voting_graph`),
-which Self-Consistency uses in two modes:
+One graph template per protocol. build_majority_voting_graph serves
+Self-Consistency in two modes: a live generation pass (one AgentSpec per
+seed, k=1) and a replay aggregation pass (one compiled graph per SC-ladder
+subset, voting over that subset's own fanned-in samples). Majority Voting
+later calls the same builder with replay specs sourced from downloaded
+artifacts, so it is the same code path, not a parallel implementation.
+build_bon_mav_graph is a separate template since BoN-MAV's topology
+(candidates, verifiers, selection) differs from a plain vote.
 
-1. **Generation pass** (live, k=1) — one live ``AgentSpec`` per seed; the
-   live ``generate`` closure appends the full generation record used for
-   the persisted artifact (see ``utils.persistence``).
-2. **Aggregation pass** (replay) — one compiled graph per subset of the SC
-   ladder, each with one replay spec per generator in that subset; the
-   ``aggregate`` node groups and votes over that subset's own samples (see
-   ``utils.voting.run_self_consistency``).
-
-Majority Voting later calls the identical builder with replay specs sourced
-from *downloaded* artifacts — the same code path SC's aggregation pass
-exercises, not a parallel implementation. The BoN-MAV graph is a separate
-template since its topology (candidates + verifiers + selection) differs
-from a plain vote.
-
-The majority vote is produced **by the graph protocol itself** — the
-``aggregate`` node groups its own fanned-in samples via
-``utils.voting.group_generations`` and votes via ``utils.voting.majority_vote``
-— so every reported SC number is a number the LangGraph protocol actually
-computed, not a Python loop that merely reuses its data structures.
-
-The ground-truth answer never enters graph state — correctness is always
-computed by the caller after ``invoke()`` returns, so leakage into the
-protocol logic is impossible by construction.
+The aggregate node groups and votes over its own fanned-in samples via
+utils.voting, so every reported number is one the graph itself computed.
+The ground-truth answer never enters graph state; correctness is always
+computed by the caller after invoke() returns.
 
 Connection to the project WPs
 -----------------------------
 * WP2-T4: the LangGraph implementation of the L1 majority-voting protocol,
-  homogeneous (SC) or heterogeneous (MAJ) via the same ``AgentSpec`` list.
+  homogeneous (SC) or heterogeneous (MAJ) via the same AgentSpec list.
 """
 
 from __future__ import annotations
@@ -78,20 +64,18 @@ class VotingState(TypedDict):
 class AgentSpec:
     """One graph node's identity and data source.
 
-    ``mode="live"`` calls ``generate(task, seed)`` — an instrumented closure
-    built in the notebook, wrapping ``build_hf_langchain_llm`` plus the
-    token/latency/VRAM measurement helpers in ``utils.instrumentation``.
-    ``mode="replay"`` looks up ``store[(problem_id, gen_id)]`` — a
-    ``utils.persistence.build_generation_store`` output, either the
-    in-session dict (SC's own aggregation pass) or a downloaded artifact
-    (Majority Voting).
+    mode="live" calls generate(task, seed), an instrumented closure built
+    in the notebook (wraps build_hf_langchain_llm plus the measurement
+    helpers in utils.instrumentation). mode="replay" looks up
+    store[(problem_id, gen_id)], a utils.persistence.build_generation_store
+    output: either the in-session dict (SC's own aggregation pass) or a
+    downloaded artifact (Majority Voting).
 
-    ``model_key`` is the registry slug (``utils.registry``) carried onto
-    every emitted ``AgentSample`` — the model's persisted identity.
-    ``model_id`` is the HF repo id, needed operationally by ``"live"`` mode
-    to actually load the model; it is not itself persisted per-record (see
-    ``utils.persistence``'s primary-key design), only recovered from
-    ``model_key`` via the registry at notebook config time.
+    model_key is the registry slug carried onto every emitted AgentSample
+    (the model's persisted identity). model_id is the HF repo id, needed
+    operationally by "live" mode to load the model; it is not itself
+    persisted per-record, only recovered from model_key via the registry
+    at notebook config time.
     """
 
     agent_id: str
@@ -116,9 +100,8 @@ def _make_gen_node(spec: AgentSpec) -> Callable[[VotingState], dict]:
         seed = spec.seed
 
         def live_node(state: VotingState) -> dict:
-            # generate() is the notebook's own closure (built per AgentSpec,
-            # already bound to this spec's agent_id/model_key/model_id) — it
-            # returns a complete AgentSample, so nothing is overridden here.
+            # generate() is the notebook's own closure, already bound to this
+            # spec's identity, and returns a complete AgentSample.
             sample = generate(state["task"], seed)  # type: ignore[misc]
             return {"samples": [sample]}
 
@@ -159,40 +142,38 @@ def build_majority_voting_graph(
     rng,
     vram_rule: Literal["sum_per_model", "coresident_peak"] = "sum_per_model",
 ) -> CompiledStateGraph:
-    """Build the Majority Voting graph: ``START -> gen_* -> aggregate -> END``.
+    """Build the Majority Voting graph: START -> gen_* -> aggregate -> END.
 
-    One ``<agent_id>`` node per spec (live or replay), called sequentially
-    in-process via synchronous ``.invoke()`` — a caller may still pre-load
-    every agent's model together first (a live, co-resident ensemble).
-    ``aggregate`` fans in samples, votes, and composes metrics.
+    One <agent_id> node per spec (live or replay), called sequentially
+    in-process via synchronous invoke() (a caller may still pre-load every
+    agent's model together first for a live, co-resident ensemble).
+    aggregate fans in samples, votes, and composes metrics.
 
     Parameters
     ----------
     agent_specs : sequence of AgentSpec
         One per graph node. Order determines node names and, since sample
-        fan-in follows node-addition order under a synchronous ``.invoke()``,
-        the index a vote's ``winner_idx`` refers to.
+        fan-in follows node-addition order under a synchronous invoke(),
+        the index a vote's winner_idx refers to.
     benchmark_spec : BenchmarkSpec
         The benchmark's extraction/equivalence rule (e.g.
-        ``utils.voting.MATH500_SPEC``), used to group this graph's own
+        utils.voting.MATH500_SPEC), used to group this graph's own
         fanned-in samples.
     rng : random.Random
-        Shared across every vote in the run — see
-        :func:`utils.voting.majority_vote` and
-        :func:`utils.voting.run_self_consistency`, which construct one
-        instance and thread it through every graph they compile.
+        Shared across every vote in the run; see utils.voting.majority_vote
+        and utils.voting.run_self_consistency, which construct one instance
+        and thread it through every graph they compile.
     vram_rule : {"sum_per_model", "coresident_peak"}
-        Forwarded to :func:`utils.voting.compose_generation_metrics`. Keep
-        the default for replayed/sequential runs (one model resident per
-        call). Pass ``"coresident_peak"`` when every ``agent_specs`` model
-        was pre-loaded together live, or VRAM over-counts.
+        Forwarded to utils.voting.compose_generation_metrics. Keep the
+        default for replayed/sequential runs (one model resident per
+        call). Pass "coresident_peak" when every agent_specs model was
+        pre-loaded together live, or VRAM over-counts.
 
     Returns
     -------
     CompiledStateGraph
-        Invoke once per problem with
-        ``{"task": ..., "problem_id": ..., "dataset": ...,
-        "samples": [], "vote": None, "metrics": None}``.
+        Invoke once per problem with {"task": ..., "problem_id": ...,
+        "dataset": ..., "samples": [], "vote": None, "metrics": None}.
     """
     if not agent_specs:
         raise ValueError("build_majority_voting_graph requires at least one AgentSpec")
@@ -234,21 +215,21 @@ def build_majority_voting_graph(
 
 
 # ---------------------------------------------------------------------------
-# BoN-MAV — a separate template: candidates + verifiers + selection, not a
-# plain vote.
+# BoN-MAV: a separate template (candidates + verifiers + selection, not a
+# plain vote).
 # ---------------------------------------------------------------------------
 
 class Approval(TypedDict):
     candidate_idx: int
     aspect_id: str
-    verdict: Optional[bool]  # None = unparseable => no approval
+    verdict: Optional[bool]  # None = unparseable, no approval
     raw_output: str
     latency_s: float
     input_tokens: int
     output_tokens: int
     total_tokens: int
     gpu_peak_mb: float
-    model_key: str  # same shape utils.voting.compose_generation_metrics expects
+    model_key: str  # shape expected by utils.voting.compose_generation_metrics
 
 
 class BonMavState(TypedDict):
@@ -268,45 +249,43 @@ def build_bon_mav_graph(
     *,
     rng,
 ) -> CompiledStateGraph:
-    """Build the BoN-MAV graph: ``START -> cand_* -> collect -> verify_* -> select -> END``.
+    """Build the BoN-MAV graph: START -> cand_* -> collect -> verify_* -> select -> END.
 
-    Reuses ``_make_gen_node``/``AgentSpec`` unmodified for the candidate side
-    — same replay path ``build_majority_voting_graph`` uses, so a candidate
-    ``AgentSample`` is byte-identical whether it came from a MAJ run or a
-    BoN-MAV run replaying the same store. ``collect`` is a barrier node with
-    no state update, purely so every ``verify_<aspect_id>`` node fans out
-    from a state where all candidates have already landed.
+    Reuses _make_gen_node/AgentSpec unmodified for the candidate side, the
+    same replay path build_majority_voting_graph uses, so a candidate
+    AgentSample is byte-identical whether it came from a MAJ run or a
+    BoN-MAV run replaying the same store. collect is a barrier node with no
+    state update, so every verify_<aspect_id> node fans out only once all
+    candidates have landed.
 
     Parameters
     ----------
     candidate_specs : sequence of AgentSpec
-        One per candidate (typically ``mode="replay"``, sourced from
-        :func:`utils.ensembles.sample_slots`'s ``rep=0`` draw).
+        One per candidate (typically mode="replay", sourced from
+        utils.ensembles.sample_slots's rep=0 draw).
     aspect_ids : sequence of str
-        One ``verify_<aspect_id>`` node per id (e.g.
-        ``utils.mav.MAV_ASPECT_SUBSETS[dataset][subset_id]``); each node
-        calls ``verify()`` once per fanned-in candidate sample.
+        One verify_<aspect_id> node per id (e.g.
+        utils.mav.MAV_ASPECT_SUBSETS[dataset][subset_id]); each node calls
+        verify() once per fanned-in candidate sample.
     verify : Callable[[task, candidate_answer, aspect_id], Approval]
-        A live closure over the (single, already-loaded) verifier model —
-        only this model is ever resident in VRAM. The returned ``Approval``
-        need not set ``candidate_idx``/``aspect_id``; the node fills both in
-        regardless, keyed on the fanned-in candidate's position and this
-        node's own aspect.
+        A live closure over the single, already-loaded verifier model (the
+        only model resident in VRAM). The returned Approval need not set
+        candidate_idx/aspect_id; the node fills both in regardless, keyed
+        on the fanned-in candidate's position and this node's own aspect.
     select_fn : Callable[[n_candidates, approvals, candidate_answers], dict]
-        Called as ``select_fn(n_candidates, approvals, candidate_answers,
-        rng=rng)`` — e.g. ``utils.mav.select_bon_candidate`` with its own
-        ``spec``/``rng`` keywords bound via a notebook-level partial/closure
-        (``spec`` is benchmark-specific and not itself part of this
-        template's signature).
+        Called as select_fn(n_candidates, approvals, candidate_answers,
+        rng=rng), e.g. utils.mav.select_bon_candidate with its own
+        spec/rng keywords bound via a notebook-level partial/closure (spec
+        is benchmark-specific, not part of this template's signature).
     rng : random.Random
-        Threaded into ``select_fn`` the same way ``build_majority_voting_graph``
-        threads its shared ``rng`` into every vote in a run.
+        Threaded into select_fn the same way build_majority_voting_graph
+        threads its shared rng into every vote in a run.
 
     Returns
     -------
     CompiledStateGraph
-        Invoke once per problem with ``{"task": ..., "problem_id": ...,
-        "dataset": ..., "samples": [], "approvals": [], "selection": None}``.
+        Invoke once per problem with {"task": ..., "problem_id": ...,
+        "dataset": ..., "samples": [], "approvals": [], "selection": None}.
     """
     if not candidate_specs:
         raise ValueError("build_bon_mav_graph requires at least one candidate AgentSpec")

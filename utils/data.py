@@ -1,13 +1,13 @@
 """
-data.py — Dataset loading and preprocessing utilities.
+data.py: Dataset loading and preprocessing utilities.
 
 Provides thin wrappers around Hugging Face Datasets for GSM8K, MMLU and
 MATH-500, with standardised column names and optional subsampling.
 
 Connection to the project WPs
 -----------------------------
-* WP2-T1: implements GSM8K/MMLU/MATH-500 ingestion — standardised columns +
-  seeded subsampling.
+* WP2-T1: implements GSM8K/MMLU/MATH-500 ingestion, with standardised
+  columns and seeded subsampling.
 * WP1-T1 & WP2-T3/T4/T6: serves that same split as the evaluation set for the
   template, baselines and protocols.
 """
@@ -55,8 +55,8 @@ def extract_gsm8k_answer(answer_text: str) -> str:
     """Extract the final numeric answer from a GSM8K answer string.
 
     GSM8K answers contain step-by-step reasoning followed by
-    ``#### <number>``. This function returns the canonicalized number
-    (trailing dots and redundant zeros stripped).
+    `#### <number>`. Returns the canonicalized number (trailing dots and
+    redundant zeros stripped).
     """
     if "####" in answer_text:
         raw = answer_text.split("####")[-1].replace(',', '').strip()
@@ -74,9 +74,8 @@ def extract_gsm8k_answer(answer_text: str) -> str:
 def format_gsm8k_prompt(question: str) -> str:
     """Format a GSM8K question into a prompt string with answer-format instructions.
 
-    Appends a standardised instruction telling the model to provide
-    its final numerical answer in the ``#### <number>`` format used
-    by the GSM8K dataset.
+    Appends a standardised instruction telling the model to give its final
+    numerical answer in the `#### <number>` format used by GSM8K.
 
     Parameters
     ----------
@@ -121,8 +120,8 @@ def load_mmlu(
     Returns
     -------
     Dataset
-        A HF Dataset with columns ``question``, ``choices``, ``answer``,
-        and ``subject``.
+        A HF Dataset with columns `question`, `choices`, `answer`,
+        and `subject`.
     """
     ds = load_dataset("cais/mmlu", "all", split=split)
     if subjects:
@@ -167,10 +166,9 @@ def load_math500(
 ) -> Dataset:
     """Load the MATH-500 dataset (HuggingFaceH4/MATH-500).
 
-    MATH-500 is the standard 500-problem subset of the hendrycks MATH
-    test set (the original ``hendrycks/competition_math`` repo was
-    removed from the Hub for DMCA reasons). Only a ``test`` split
-    exists.
+    MATH-500 is the standard 500-problem subset of the hendrycks MATH test
+    set (the original `hendrycks/competition_math` repo was removed from
+    the Hub for DMCA reasons). Only a `test` split exists.
 
     Parameters
     ----------
@@ -184,15 +182,15 @@ def load_math500(
     Returns
     -------
     Dataset
-        A HF Dataset with columns ``problem``, ``solution``, ``answer``,
-        ``subject``, ``level`` (1-4 — level 5 is excluded, see below) and
-        ``unique_id``. Unlike GSM8K, ``answer`` is already the final answer
-        (raw LaTeX, no delimiters) — there is no ``####`` marker to parse
-        out, so no ``extract_math500_answer`` counterpart is needed.
+        A HF Dataset with columns `problem`, `solution`, `answer`,
+        `subject`, `level` (1-4, level 5 excluded, see filter below) and
+        `unique_id`. Unlike GSM8K, `answer` is already the final answer
+        (raw LaTeX, no delimiters), so no `extract_math500_answer`
+        counterpart is needed.
     """
     ds = load_dataset("HuggingFaceH4/MATH-500", split=split)
-    # Level-5 (hardest) problems produce long reasoning chains that frequently
-    # exceed the fixed generation budget and get truncated before `\boxed{}` —
+    # Level-5 (hardest) problems produce long reasoning chains that often
+    # exceed the generation budget and get truncated before `\boxed{}`;
     # excluded so accuracy reflects capability, not truncation.
     ds = ds.filter(lambda x: x["level"] <= 4)
     if n_samples is not None:
@@ -212,7 +210,7 @@ def format_math_prompt(problem: str) -> str:
     -------
     str
         A formatted prompt ready to be sent to a model. Notebooks build
-        their own equivalent ``PromptTemplate`` (as with GSM8K); this
+        their own equivalent `PromptTemplate` (as with GSM8K); this
         function documents the canonical wording in one importable place.
     """
     return (
@@ -234,36 +232,32 @@ def extend_sample(
 ) -> list:
     """Extend a baseline-seeded sample with extra items, base as an exact prefix.
 
-    ``random.sample`` selects positions purely as a function of population
-    length (not content), so sampling indices with ``random.Random(seed)``
-    reproduces the exact same items as the baselines' ``random.seed(seed);
-    random.sample(list(items), base_n)`` call. The returned list's first
-    ``base_n`` items are therefore identical to — and pair exactly with — the
-    v2.x baseline subset; the remaining ``extra_n`` are drawn from what's left
-    under an independent ``extra_seed``, so extending the sample never
-    perturbs the base subset's draw.
-
-    Used for MMLU, whose SC eval_size (128) differs from the v2.x baselines'
-    (100): the first 100 pair with the baselines for overhead ratios, and all
-    128 are used for SC accuracy.
+    `random.sample` selects positions purely as a function of population
+    length, so sampling indices with `random.Random(seed)` reproduces the
+    same items as the baselines' `random.seed(seed); random.sample(...)`
+    call. The first `base_n` items therefore pair exactly with the v2.x
+    baseline subset; the remaining `extra_n` are drawn from what's left
+    under an independent `extra_seed`, so extending never perturbs the base
+    draw. Used for MMLU, whose SC eval_size (128) differs from the v2.x
+    baselines' (100).
 
     Parameters
     ----------
     items : Sequence
-        The full pool to sample from (e.g. a loaded HF ``Dataset``).
+        The full pool to sample from (e.g. a loaded HF `Dataset`).
     base_n : int
         Size of the baseline-reproducing prefix.
     extra_n : int
         Number of additional items to draw from the remainder.
     seed : int
-        Seed reproducing the baseline's ``base_n`` subset.
+        Seed reproducing the baseline's `base_n` subset.
     extra_seed : int
-        Independent seed for the ``extra_n`` extension.
+        Independent seed for the `extra_n` extension.
 
     Returns
     -------
     list
-        ``base_n + extra_n`` items: the exact baseline prefix, then the extras.
+        `base_n + extra_n` items: the exact baseline prefix, then the extras.
     """
     pool = list(items)
     idx_pool = list(range(len(pool)))

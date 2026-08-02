@@ -1,5 +1,5 @@
 """
-evaluation.py — Evaluation metrics and result aggregation.
+evaluation.py: Evaluation metrics and result aggregation.
 
 Provides functions to compute accuracy for GSM8K (exact numeric match),
 MMLU (multiple-choice letter match) and MATH-500 (LaTeX/symbolic
@@ -31,10 +31,9 @@ from typing import Sequence
 def normalize_numeric(text: str) -> str | None:
     """Extract the last number from a string and canonicalize it.
 
-    Strips commas, then canonicalizes via a float round-trip so
-    formatting differences don't cause false negatives in downstream
-    comparisons (e.g. ``42.`` -> ``42``, ``42.00`` -> ``42``).
-    Returns None if no number is found.
+    Strips commas, then canonicalizes via a float round-trip so formatting
+    differences don't cause false negatives (e.g. `42.` -> `42`,
+    `42.00` -> `42`). Returns None if no number is found.
     """
     # Remove commas from numbers like 1,234
     text = text.replace(",", "")
@@ -63,16 +62,10 @@ def _canonicalize_number(s: str) -> str:
 def gsm8k_match(prediction: str | None, reference: str | None) -> bool:
     """Check whether a predicted GSM8K answer matches the reference.
 
-    Both values may be None (extraction failure) — in that case
-    the result is False.
-
-    The comparison strategy is:
-
-    1. Try to convert both sides to float and compare with an epsilon
-       margin (rel_tol=1e-9) to absorb floating-point rounding —
-       e.g. 42.0 vs 42, or 3.10 vs 3.1.
-    2. If either side cannot be converted to float, fall back to
-       a plain string comparison of the canonicalized forms.
+    Both values may be None (extraction failure), in which case the result
+    is False. Compares as floats with an epsilon margin (rel_tol=1e-9) to
+    absorb rounding (e.g. 42.0 vs 42, or 3.10 vs 3.1); falls back to a
+    plain string comparison if either side isn't numeric.
     """
     if prediction is None or reference is None:
         return False
@@ -113,14 +106,13 @@ def gsm8k_accuracy(
 
 
 def _iter_boxed_contents(text: str) -> list[str]:
-    """Return every brace-balanced ``\\boxed{...}`` content, in document order.
+    """Return every brace-balanced `\\boxed{...}` content, in document order.
 
-    Walks each ``\\boxed{`` with a depth counter so nested LaTeX
-    (``\\boxed{\\frac{1}{2}}``) is captured in full instead of being
-    truncated at the first ``}``. A ``\\boxed{`` whose braces never
-    balance (e.g. a truncated generation) is skipped. Shared by GSM8K
-    (which scans all occurrences in reverse) and MATH-500 (which wants
-    only the last one).
+    Walks each `\\boxed{` with a depth counter so nested LaTeX
+    (`\\boxed{\\frac{1}{2}}`) is captured in full instead of truncating at
+    the first `}`. A `\\boxed{` whose braces never balance (truncated
+    generation) is skipped. Shared by GSM8K (scans all occurrences in
+    reverse) and MATH-500 (wants only the last one).
     """
     contents = []
     pos = 0
@@ -149,12 +141,12 @@ def _iter_boxed_contents(text: str) -> list[str]:
 def _number_from_boxed_content(content: str) -> str | None:
     """Return the numeric value from a \\boxed{...} content string, or None.
 
-    Handles pure numbers (``750``), currency-prefixed values (``\\$3220``),
-    and numbers with trailing unit words (``1 hour``, ``60 minutes``).
-    Returns None for algebraic expressions (``2A+S+\\$720``).
+    Handles pure numbers (`750`), currency-prefixed values (`\\$3220`),
+    and numbers with trailing unit words (`1 hour`, `60 minutes`).
+    Returns None for algebraic expressions (`2A+S+\\$720`).
     """
     cleaned = content.replace("\\$", "").replace("$", "").replace(",", "").strip()
-    # Accept: optional leading sign, digits, optional decimal — then only letters/spaces
+    # Accept optional leading sign, digits, optional decimal, then only letters/spaces
     m = re.match(r"^(-?\d+\.?\d*)\s*([A-Za-z\s]*)$", cleaned)
     if m and not re.search(r"\d", m.group(2)):
         return m.group(1).rstrip(".")
@@ -165,14 +157,13 @@ def extract_gsm8k_prediction(agent_output: str) -> str | None:
     """Extract a numeric prediction from an agent's GSM8K output.
 
     Search order:
-    1. Last ``\\boxed{...}`` whose content resolves to a number.
-       Handles currency prefixes (``\\$``) and unit suffixes (``hours``,
-       ``minutes``, etc.); skips algebraic expressions.
-    2. ``#### <number>`` marker (legacy GSM8K format).
+    1. Last `\\boxed{...}` whose content resolves to a number. Handles
+       currency prefixes (`\\$`) and unit suffixes (`hours`, `minutes`,
+       etc.); skips algebraic expressions.
+    2. `#### <number>` marker (legacy GSM8K format).
     3. Last number in the full text (fallback).
 
-    The returned value is canonicalized so it can be compared directly
-    with the ground truth.  Returns ``None`` if no number is found.
+    Returns the canonicalized value, or `None` if no number is found.
     """
     # Collect all balanced \boxed{} contents and scan from the end so the
     # last numeric answer wins over intermediate boxed values.
@@ -217,13 +208,13 @@ def normalize_mmlu_answer(text: str) -> str | None:
 
     Extraction priority:
 
-    1. EvalScope-style ``ANSWER: X`` — matched case-sensitively on the
-       word ``ANSWER`` so it cannot accidentally fire on ``Final Answer: X``.
-    2. ``Final Answer: X`` — legacy / fallback for older prompt formats.
+    1. EvalScope-style `ANSWER: X`, matched case-sensitively on the word
+       `ANSWER` so it cannot accidentally fire on `Final Answer: X`.
+    2. `Final Answer: X`: legacy fallback for older prompt formats.
     3. Direct single-letter response after stripping punctuation.
-    4. First standalone A–D letter found anywhere in the text.
+    4. First standalone A-D letter found anywhere in the text.
     """
-    # Priority 1: EvalScope format — uppercase 'ANSWER: X' (letter A–D any case)
+    # Priority 1: EvalScope format, uppercase 'ANSWER: X' (letter A-D any case)
     ans_match = re.search(r"ANSWER\s*:\s*([A-Da-d])", text)
     if ans_match:
         return ans_match.group(1).upper()
@@ -270,8 +261,7 @@ def mmlu_accuracy(
     predictions : sequence of str
         Raw model outputs.
     references : sequence of int or str
-        Gold labels — either letter strings (A–D) or
-        integer indices (0–3).
+        Gold labels: either letter strings (A-D) or integer indices (0-3).
     """
     if len(predictions) != len(references):
         raise ValueError("predictions and references must have the same length")
@@ -291,12 +281,12 @@ def get_ground_truth_letter(answer_idx: int) -> str:
     Parameters
     ----------
     answer_idx : int
-        Index (0–3) of the correct choice.
+        Index (0-3) of the correct choice.
 
     Returns
     -------
     str
-        The letter ``"A"``–``"D"``.
+        The letter "A" through "D".
     """
     return _LETTER_MAP[answer_idx]
 
@@ -306,10 +296,10 @@ def get_ground_truth_letter(answer_idx: int) -> str:
 # ---------------------------------------------------------------------------
 
 def _last_boxed_content(text: str) -> str | None:
-    """Return the content of the last ``\\boxed{...}`` in text, brace-balanced.
+    """Return the content of the last `\\boxed{...}` in text, brace-balanced.
 
-    Thin wrapper over :func:`_iter_boxed_contents` — see there for the
-    balanced-scan semantics. Returns None if no balanced ``\\boxed{}`` exists.
+    Thin wrapper over :func:`_iter_boxed_contents` for the balanced-scan
+    semantics. Returns None if no balanced `\\boxed{}` exists.
     """
     contents = _iter_boxed_contents(text)
     return contents[-1] if contents else None
@@ -319,16 +309,15 @@ def _last_boxed_content(text: str) -> str | None:
 def extract_math_prediction(agent_output: str) -> str | None:
     """Extract a display-only MATH-500 prediction from an agent's output.
 
-    This is used solely to populate the ``final_output`` column of the
-    results table for human inspection — correctness is computed by
-    :func:`math_match` on the *full* agent output, since ``math_verify``
-    is itself a robust boxed/LaTeX extractor and re-cutting the string
-    here first would only throw away information (and could disagree
-    with what actually got scored).
+    Used solely to populate the `final_output` column of the results table
+    for human inspection. Correctness is computed by :func:`math_match` on
+    the *full* agent output, since `math_verify` is itself a robust
+    boxed/LaTeX extractor and re-cutting the string here would only throw
+    away information (and could disagree with what actually got scored).
 
     Search order:
-    1. Last ``\\boxed{...}`` content (brace-balanced).
-    2. Last ``$...$`` inline-math span.
+    1. Last `\\boxed{...}` content (brace-balanced).
+    2. Last `$...$` inline-math span.
     3. None.
     """
     boxed = _last_boxed_content(agent_output)
@@ -343,10 +332,10 @@ def extract_math_prediction(agent_output: str) -> str | None:
 
 
 def _math_verify_timeouts() -> tuple[int | None, int | None]:
-    """Return ``(parsing_timeout, verify_timeout)`` for ``math_verify`` calls.
+    """Return `(parsing_timeout, verify_timeout)` for `math_verify` calls.
 
-    Both ``math_verify.parse`` and ``verify`` apply a per-call timeout using
-    ``signal.SIGALRM`` on Unix (cheap) but fall back to spawning a subprocess
+    Both `math_verify.parse` and `verify` apply a per-call timeout using
+    `signal.SIGALRM` on Unix (cheap) but fall back to spawning a subprocess
     on Windows, which silently breaks under a test runner (the subprocess
     can't be spawned, and the failure is swallowed as an empty parse).
     Kaggle (the actual execution environment) is Linux, so both timeouts
@@ -358,14 +347,14 @@ def _math_verify_timeouts() -> tuple[int | None, int | None]:
 
 @lru_cache(maxsize=4096)
 def _parse_math_cached(text: str):
-    """Cached ``math_verify.parse``.
+    """Cached `math_verify.parse`.
 
-    The ANTLR LaTeX -> sympy parse is the expensive, order-independent half
-    of a comparison — caching it here means ``math_match`` and
-    ``math_equiv`` share one parse per distinct string instead of
-    re-parsing the same generation on every pairwise check (e.g. grouping a
-    Self-Consistency problem's 5 generations touches each text in up to 4
-    comparisons). Returns ``None`` on any parse failure.
+    The ANTLR LaTeX to sympy parse is the expensive, order-independent half
+    of a comparison, so caching it here means `math_match` and `math_equiv`
+    share one parse per distinct string instead of re-parsing the same
+    generation on every pairwise check (e.g. grouping a Self-Consistency
+    problem's 5 generations touches each text in up to 4 comparisons).
+    Returns `None` on any parse failure.
     """
     from math_verify import parse
     parsing_timeout, _ = _math_verify_timeouts()
@@ -378,22 +367,20 @@ def _parse_math_cached(text: str):
 def math_match(prediction: str | None, reference: str | None) -> bool:
     """Check whether a full MATH-500 model output matches the reference answer.
 
-    Both values may be None/empty — in that case the result is False.
-    Scoring uses ``math_verify`` (sympy-based) for LaTeX/symbolic
-    equivalence (e.g. ``1/2`` == ``\\frac{1}{2}`` == ``0.5``), since a
-    plain numeric or string comparison cannot handle MATH-500's
-    LaTeX-formatted answers (fractions, roots, intervals, matrices, ...).
+    Both values may be None/empty, in which case the result is False.
+    Scoring uses `math_verify` (sympy-based) for LaTeX/symbolic equivalence
+    (e.g. `1/2` == `\\frac{1}{2}` == `0.5`), since a plain numeric or string
+    comparison cannot handle MATH-500's LaTeX-formatted answers.
 
-    ``prediction`` should be the *full* model output (not a pre-extracted
-    substring) — ``math_verify.parse`` already performs boxed/LaTeX
-    extraction with its own fallback chain, so handing it the raw text is
-    more robust than re-extracting first.
+    `prediction` should be the *full* model output, not a pre-extracted
+    substring: `math_verify.parse` already performs boxed/LaTeX extraction
+    with its own fallback chain, so handing it raw text is more robust.
 
-    Note the argument order: ``verify(reference, pred)`` takes the ground-
-    truth reference first. This is intentionally asymmetric (e.g. for
-    inequalities vs. their solution sets) — swapping the arguments would
-    silently change results, and is why this function is *not* reused for
-    candidate-vs-candidate comparisons (see :func:`math_equiv`).
+    Argument order matters: `verify(reference, pred)` takes the ground-truth
+    reference first, intentionally asymmetric (e.g. for inequalities vs.
+    their solution sets). Swapping would silently change results, which is
+    why this is *not* reused for candidate-vs-candidate comparisons (see
+    :func:`math_equiv`).
     """
     if not prediction or not reference:
         return False
@@ -402,7 +389,7 @@ def math_match(prediction: str | None, reference: str | None) -> bool:
         from math_verify import verify
     except ImportError as exc:
         raise ImportError(
-            "math-verify is required for MATH-500 scoring — "
+            "math-verify is required for MATH-500 scoring: "
             "pip install 'math-verify[antlr4_13_2]'"
         ) from exc
 
@@ -422,17 +409,17 @@ def math_match(prediction: str | None, reference: str | None) -> bool:
         return bool(verify(reference_parsed, pred, timeout_seconds=verify_timeout))
     except Exception:
         # A single pathological LaTeX sample must not kill a 384-invocation
-        # evaluation run — treat any parser/sympy failure as "not a match".
+        # evaluation run; treat any parser/sympy failure as "not a match".
         return False
 
 
 @lru_cache(maxsize=4096)
 def _verify_cached(a_full: str, b_full: str) -> bool:
-    """Cached, order-sensitive pairwise ``math_verify.verify``.
+    """Cached, order-sensitive pairwise `math_verify.verify`.
 
     Only called via :func:`math_equiv`, which always passes its two
-    arguments pre-sorted — so a symmetric caller collapses ``(a, b)`` and
-    ``(b, a)`` onto the same cache entry instead of paying for both
+    arguments pre-sorted, so a symmetric caller collapses `(a, b)` and
+    `(b, a)` onto the same cache entry instead of paying for both
     directions.
     """
     from math_verify import verify
@@ -451,11 +438,11 @@ def _verify_cached(a_full: str, b_full: str) -> bool:
 def math_equiv(a_full: str, b_full: str) -> bool:
     """Symmetric MATH-500 equivalence between two full *candidate* outputs.
 
-    Used to group Self-Consistency generations into equivalence classes —
-    unlike :func:`math_match`, neither side is the ground-truth reference,
-    so both verify directions are checked (``math_verify.verify`` is itself
-    asymmetric).
-    Both values may be None/empty, in which case the result is False.
+    Used to group Self-Consistency generations into equivalence classes.
+    Unlike :func:`math_match`, neither side is the ground-truth reference,
+    so both verify directions are checked (`math_verify.verify` is itself
+    asymmetric). Both values may be None/empty, in which case the result
+    is False.
     """
     if not a_full or not b_full:
         return False
@@ -467,7 +454,7 @@ def math_accuracy(
     predictions: Sequence[str],
     references: Sequence[str],
 ) -> float:
-    """Compute MATH-500 accuracy via ``math_match`` over full model outputs."""
+    """Compute MATH-500 accuracy via `math_match` over full model outputs."""
     if len(predictions) != len(references):
         raise ValueError("predictions and references must have the same length")
 

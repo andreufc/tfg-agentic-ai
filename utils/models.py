@@ -1,16 +1,16 @@
 """
-models.py — Model loading utilities.
+models.py: Model loading utilities.
 
 Loads HF causal-LM (and text-capable multimodal) models within a single 16 GB
 T4 GPU budget. The loaded model's linear weights are always 4-bit; where those
-4-bit weights come from is selected by the ``quantize_4bit`` flag:
+4-bit weights come from is selected by the `quantize_4bit` flag:
 
-* ``quantize_4bit=True`` (default): the checkpoint ships in full precision and
+* `quantize_4bit=True` (default): the checkpoint ships in full precision and
   is quantised to NF4 on the fly via bitsandbytes. Used by every family except
   the pre-quantised Gemma-4 QAT checkpoints below.
-* ``quantize_4bit=False``: the checkpoint is already 4-bit on disk in the
-  compressed-tensors w4a16 format (``google/gemma-4-{E2B,E4B}-it-qat-w4a16-ct``);
-  transformers restores it via its compressed-tensors quantizer, no bitsandbytes.
+* `quantize_4bit=False`: the checkpoint is already 4-bit on disk in the
+  compressed-tensors w4a16 format (`google/gemma-4-{E2B,E4B}-it-qat-w4a16-ct`),
+  restored by transformers via its compressed-tensors quantizer, no bitsandbytes.
 
 Loading is dispatched per family: Ministral-3 and Gemma-4 (E2B/E4B) ship as
 multimodal checkpoints (loaded via the image-text class, then stripped of their
@@ -44,8 +44,8 @@ def _strip_vision_modules(model: PreTrainedModel) -> None:
     """Drop the vision/audio encoders of a multimodal text-capable checkpoint.
 
     Ministral-3 and Gemma-4 E2B/E4B ship as multimodal checkpoints but are used
-    here for text only. Only modules actually present are dropped, so this is safe
-    across families (e.g. Ministral-3 has no ``audio_tower``).
+    here for text only. Only modules actually present are dropped, so this is
+    safe across families (e.g. Ministral-3 has no `audio_tower`).
     """
     inner = getattr(model, "model", None)
     if inner is None:
@@ -62,7 +62,7 @@ def _strip_vision_modules(model: PreTrainedModel) -> None:
             setattr(inner, attr, None)
             freed = True
     if freed:
-        # Collect the dropped modules before reclaiming their VRAM.
+        # Collect dropped modules before reclaiming VRAM.
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -71,12 +71,11 @@ def _strip_vision_modules(model: PreTrainedModel) -> None:
 def _assert_4bit_weights(
     model: PreTrainedModel, model_name: str, quantize_4bit: bool
 ) -> None:
-    """Fail loudly if the model did not actually load with 4-bit linear weights.
+    """Fail loudly if the model did not load with 4-bit linear weights.
 
-    A silent fall-back to full precision — missing bitsandbytes, or a
-    compressed-tensors config transformers didn't recognise — would OOM the T4,
-    so confirm the expected quantised layer type is present. bitsandbytes wraps
-    the linear layers as ``Linear4bit``; compressed-tensors as ``CompressedLinear``.
+    A silent fallback to full precision (missing bitsandbytes, or an
+    unrecognised compressed-tensors config) would OOM the T4. bitsandbytes
+    wraps linear layers as `Linear4bit`; compressed-tensors as `CompressedLinear`.
     """
     if quantize_4bit:
         from bitsandbytes.nn import Linear4bit  # type: ignore
@@ -94,7 +93,7 @@ def _assert_4bit_weights(
 
     if not any(isinstance(m, quant_layer) for m in model.modules()):
         raise RuntimeError(
-            f"{model_name!r} loaded in full precision (dtype={model.dtype}) — no "
+            f"{model_name!r} loaded in full precision (dtype={model.dtype}), no "
             f"{quant_layer.__name__} layers found. This will OOM the T4; {hint}."
         )
 
@@ -113,17 +112,15 @@ def load_model_and_tokenizer(
     model_name : str
         HuggingFace model identifier.
     quantize_4bit : bool
-        ``True`` to NF4-quantise a full-precision checkpoint on the fly with
-        bitsandbytes; ``False`` to load an already-4-bit compressed-tensors
-        checkpoint (e.g. ``google/gemma-4-*-qat-w4a16-ct``) as-is. Passing
-        ``True`` for such a pre-quantised checkpoint is an error — it cannot be
-        re-quantised. Either way the resulting weights are 4-bit.
+        `True` NF4-quantises a full-precision checkpoint on load; `False`
+        loads an already-4-bit compressed-tensors checkpoint as-is. Passing
+        `True` for a pre-quantised checkpoint errors (cannot re-quantise).
     device_map : str
-        Placement passed to ``from_pretrained``. The default ``"auto"`` is forced
-        to ``{"": 0}`` (single visible GPU) for the multimodal families when CUDA
-        is available; pass an explicit value to opt out.
+        Passed to `from_pretrained`. `"auto"` is forced to `{"": 0}` for
+        multimodal families when CUDA is available; pass an explicit value
+        to opt out.
     token : str | None
-        HF access token; falls back to the ``HF_TOKEN`` env var.
+        HF access token; falls back to the `HF_TOKEN` env var.
     trust_remote_code : bool
         Whether to trust remote code in the model repo.
 
@@ -134,9 +131,8 @@ def load_model_and_tokenizer(
     token = token or os.environ.get("HF_TOKEN")
     name_lower = model_name.lower()
 
-    # The compressed-tensors QAT checkpoints are already 4-bit on disk; running
-    # them through bitsandbytes would try to re-quantise already-quantised
-    # weights. Require the caller to opt out of bitsandbytes for them.
+    # QAT checkpoints are already 4-bit on disk; bitsandbytes would try to
+    # re-quantise them, so require quantize_4bit=False for these.
     if quantize_4bit and name_lower.endswith("-qat-w4a16-ct"):
         raise ValueError(
             f"{model_name!r} is already 4-bit quantised (compressed-tensors w4a16) "
@@ -148,10 +144,9 @@ def load_model_and_tokenizer(
         # bitsandbytes NF4 path: quantise a full-precision checkpoint on load.
         from transformers.utils import is_bitsandbytes_available  # type: ignore
 
-        # is_bitsandbytes_available is lru_cached and on Kaggle is often first
-        # called before CUDA is live, freezing False for the session — which makes
-        # transformers silently skip quantisation and OOM the T4 in full BF16.
-        # Clear the cache to force a fresh evaluation here and in from_pretrained.
+        # is_bitsandbytes_available is lru_cached and often first evaluated on
+        # Kaggle before CUDA is live, freezing False and OOMing the T4 in BF16;
+        # clear the cache to force a fresh evaluation here and in from_pretrained.
         try:
             is_bitsandbytes_available.cache_clear()  # type: ignore[attr-defined]
         except AttributeError:
@@ -175,7 +170,7 @@ def load_model_and_tokenizer(
         )
     else:
         # compressed-tensors path: the checkpoint carries its own quantization_config,
-        # which transformers reads to restore the 4-bit weights — no config passed here.
+        # which transformers reads to restore the 4-bit weights; no config passed here.
         from transformers.utils import is_compressed_tensors_available  # type: ignore
 
         if not is_compressed_tensors_available():
@@ -189,19 +184,16 @@ def load_model_and_tokenizer(
         "ministral" in name_lower or "gemma-4" in name_lower or "gemma4" in name_lower
     )
 
-    # Pin multimodal checkpoints to the single GPU. They are loaded whole (vision
-    # + audio towers included) and stripped afterwards; under "auto" accelerate
-    # budgets for those towers and can offload language layers to CPU, which then
-    # stay there and cripple throughput with per-token PCIe transfers.
+    # Pin multimodal checkpoints to one GPU: they load whole (vision/audio
+    # towers included) then get stripped; "auto" can offload layers to CPU
+    # permanently, crippling throughput with per-token PCIe transfers.
     effective_device_map = device_map
     if multimodal and device_map == "auto" and torch.cuda.is_available():
         effective_device_map = {"": 0}
 
-    # float16 for both paths: the T4 (compute capability 7.5) has no native bf16.
-    # It matches the bitsandbytes compute dtype and keeps the non-quantised modules
-    # (norms, embeddings) off a per-version fp32 fallback; for compressed-tensors it
-    # overrides the checkpoint's declared bf16 with its recommended compute dtype.
-    # ``dtype`` is the transformers>=5 name.
+    # float16 for both paths: the T4 has no native bf16. Matches the bitsandbytes
+    # compute dtype and overrides compressed-tensors' declared bf16.
+    # `dtype` is the transformers>=5 kwarg name.
     load_kwargs = dict(
         quantization_config=quant_config,
         device_map=effective_device_map,
@@ -216,8 +208,8 @@ def load_model_and_tokenizer(
     else:
         model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
 
-    # Warn if any layer was offloaded off-GPU — generation would slow to single
-    # digits from per-token PCIe transfers rather than the model being "slow".
+    # Warn if any layer was offloaded off-GPU: generation would slow to single
+    # digits from per-token PCIe transfers, not because the model itself is slow.
     hf_map = getattr(model, "hf_device_map", None)
     if hf_map:
         offloaded = sorted(
@@ -235,7 +227,7 @@ def load_model_and_tokenizer(
                 stacklevel=2,
             )
 
-    # Guarantee the weights actually loaded in 4-bit (scanning for the quantised
+    # Guarantee the weights loaded in 4-bit (scanning for the quantised
     # layer type is more reliable than transformers flags across versions).
     _assert_4bit_weights(model, model_name, quantize_4bit)
 
