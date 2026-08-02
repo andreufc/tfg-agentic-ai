@@ -348,3 +348,94 @@ def approval_diagnostics(approvals: Sequence[Mapping[str, Any]], n_candidates: i
             "n": n,
         }
     return result
+
+
+def candidate_correctness(
+    samples: Sequence[Mapping[str, Any]], ground_truth: Any, spec: BenchmarkSpec
+) -> list[bool]:
+    """Score every candidate against ground truth, not just the selected one.
+
+    Same ``compare_on``/``score`` rule the run loop already applies to the
+    selected candidate (:class:`utils.voting.BenchmarkSpec`), applied to all
+    N candidates. Pure CPU comparison — every candidate is already
+    generated/replayed — so this costs nothing and is the basis for the
+    oracle/recovery and verifier-quality-vs-ground-truth metrics below.
+    """
+    compare_values = [
+        sample["answer"] if spec.compare_on == "answer" else sample["parsed_output"]
+        for sample in samples
+    ]
+    return [spec.score(value, ground_truth) for value in compare_values]
+
+
+def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict:
+    """Per-aspect verifier accuracy against ground truth (not just approval rate).
+
+    :func:`approval_diagnostics` only measures how often an aspect approves;
+    this measures whether it is *right* to approve — treating
+    ``verdict is True`` as a prediction that the candidate is actually
+    correct (``approval["candidate_correct"]``, attached per-approval by the
+    caller via :func:`candidate_correctness`). This is the counterpart to the
+    sycophancy flag: an aspect approving >95% of candidates could be a
+    genuinely strong verifier (if those candidates are mostly correct) or a
+    rubber stamp (if they aren't) — ``approval_rate`` alone can't tell them
+    apart, ``precision``/``recall``/``accuracy`` here can.
+
+    Returns, per ``aspect_id``: ``{precision, recall, accuracy, n}``.
+    ``precision``/``recall`` are ``None`` when undefined (no approvals, or no
+    actually-correct candidates were ever seen by that aspect).
+    """
+    by_aspect: dict[str, list[Mapping[str, Any]]] = {}
+    for approval in approvals:
+        by_aspect.setdefault(approval["aspect_id"], []).append(approval)
+
+    result: dict[str, dict] = {}
+    for aspect_id, aspect_approvals in by_aspect.items():
+        tp = fp = fn = tn = 0
+        for a in aspect_approvals:
+            predicted_correct = a["verdict"] is True
+            actual_correct = a["candidate_correct"]
+            if predicted_correct and actual_correct:
+                tp += 1
+            elif predicted_correct and not actual_correct:
+                fp += 1
+            elif not predicted_correct and actual_correct:
+                fn += 1
+            else:
+                tn += 1
+        n = len(aspect_approvals)
+        result[aspect_id] = {
+            "precision": tp / (tp + fp) if (tp + fp) else None,
+            "recall": tp / (tp + fn) if (tp + fn) else None,
+            "accuracy": (tp + tn) / n if n else 0.0,
+            "n": n,
+        }
+    return result
+
+
+def oracle_and_recovery(records: Sequence[Mapping[str, Any]]) -> dict:
+    """Oracle upper bound and recovery rate for a completed BoN-MAV run.
+
+    ``oracle_accuracy`` is the fraction of problems where at least one of
+    the N replayed candidates is correct — the best any verifier, however
+    perfect, could achieve, since BoN-MAV only *selects* among existing
+    candidates, never generates a new answer. ``recovery_rate`` isolates
+    selection quality from candidate quality: of the problems where a
+    correct candidate existed at all, what fraction did the verifier
+    actually select? Each record must carry ``candidate_correct`` (from
+    :func:`candidate_correctness`) and ``correct`` (the selected candidate's
+    own correctness, already computed by every BoN-MAV notebook).
+    """
+    n_recoverable = 0
+    n_recovered = 0
+    for r in records:
+        if any(r["candidate_correct"]):
+            n_recoverable += 1
+            if r["correct"]:
+                n_recovered += 1
+    n = len(records)
+    return {
+        "oracle_accuracy": n_recoverable / n if n else 0.0,
+        "n_recoverable": n_recoverable,
+        "recovery_rate": n_recovered / n_recoverable if n_recoverable else None,
+    }
