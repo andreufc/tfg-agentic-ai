@@ -22,7 +22,6 @@ Connection to the project WPs
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 GENERATIONS_ARTIFACT_PREFIX = "sc-generations"
@@ -65,10 +64,6 @@ MODELS: dict[str, dict] = {
     },
 }
 
-_MODEL_ID_TO_KEY: dict[str, str] = {v["model_id"]: k for k, v in MODELS.items()}
-
-_ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
-
 
 def get_model(model_key: str) -> dict:
     """Look up a model's registry entry by its short key.
@@ -83,24 +78,6 @@ def get_model(model_key: str) -> dict:
     except KeyError:
         raise ValueError(
             f"Unknown model_key {model_key!r}; expected one of {sorted(MODELS)}"
-        ) from None
-
-
-def model_key_for(model_id: str) -> str:
-    """Reverse lookup: the `model_key` registered for an HF `model_id`.
-
-    Raises
-    ------
-    ValueError
-        If no registered model has this `model_id`, typically a sign that
-        `MODELS` needs a new entry rather than that the caller made a typo.
-    """
-    try:
-        return _MODEL_ID_TO_KEY[model_id]
-    except KeyError:
-        raise ValueError(
-            f"No model_key registered for model_id {model_id!r}; "
-            f"known model_ids: {sorted(_MODEL_ID_TO_KEY)}"
         ) from None
 
 
@@ -154,8 +131,3 @@ def problem_ref(dataset: str, problem_id: int) -> str:
     """
     _check_dataset(dataset)
     return f"{dataset}#{problem_id:03d}"
-
-
-def is_valid_artifact_name(name: str) -> bool:
-    """Whether *name* is a legal W&B artifact name (`[A-Za-z0-9_.-]`, <=128 chars)."""
-    return bool(name) and len(name) <= 128 and bool(_ARTIFACT_NAME_RE.match(name))

@@ -56,23 +56,3 @@ def load_env(environment: str = "local") -> None:
         print(f"⚠️ Warning: Error loading secrets: {e}")
         print("Trying to load from .env file as fallback...")
         print("Some secrets may not be loaded. Ensure python-dotenv is installed and .env file exists.")
-
-
-def get_hf_token() -> str:
-    """Return the Hugging Face token, raising if missing."""
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        raise EnvironmentError(
-            "HF_TOKEN not found. Set it in .env, Colab secrets, or Kaggle Secrets."
-        )
-    return token
-
-
-def get_wandb_key() -> str:
-    """Return the W&B API key, raising if missing."""
-    key = os.environ.get("WANDB_API_KEY")
-    if not key:
-        raise EnvironmentError(
-            "WANDB_API_KEY not found. Set it in .env, Colab secrets, or Kaggle Secrets."
-        )
-    return key

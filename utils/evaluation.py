@@ -21,7 +21,6 @@ import math
 import re
 import sys
 from functools import lru_cache
-from typing import Sequence
 
 
 # ---------------------------------------------------------------------------
@@ -82,27 +81,6 @@ def gsm8k_match(prediction: str | None, reference: str | None) -> bool:
         pass
     # Fallback: plain string comparison (for non-numeric edge-cases)
     return pred_norm == ref_norm
-
-
-def gsm8k_accuracy(
-    predictions: Sequence[str],
-    references: Sequence[str],
-) -> float:
-    """Compute exact-match accuracy for GSM8K.
-
-    Both predictions and references can contain free-form text;
-    the last number in each string is compared numerically, so
-    formatting differences (trailing dots, trailing zeros, different
-    decimal precision) do not cause false negatives.
-    """
-    if len(predictions) != len(references):
-        raise ValueError("predictions and references must have the same length")
-
-    correct = sum(
-        1 for pred, ref in zip(predictions, references)
-        if gsm8k_match(pred, ref)
-    )
-    return correct / len(predictions) if predictions else 0.0
 
 
 def _iter_boxed_contents(text: str) -> list[str]:
@@ -184,16 +162,8 @@ def extract_gsm8k_prediction(agent_output: str) -> str | None:
         except (ValueError, OverflowError):
             return raw
 
-    # Fallback: last number in text (strip commas first)
-    cleaned = agent_output.replace(",", "")
-    numbers = re.findall(r"-?\d+\.?\d*", cleaned)
-    if not numbers:
-        return None
-    raw = numbers[-1].rstrip(".")
-    try:
-        return _canonicalize_number(raw)
-    except (ValueError, OverflowError):
-        return raw
+    # Fallback: last number anywhere in the text
+    return normalize_numeric(agent_output)
 
 
 # ---------------------------------------------------------------------------
@@ -248,31 +218,6 @@ def mmlu_match(prediction: str | None, reference: str) -> bool:
     if prediction is None:
         return False
     return prediction.strip().upper() == str(reference).strip().upper()
-
-
-def mmlu_accuracy(
-    predictions: Sequence[str],
-    references: Sequence[int | str],
-) -> float:
-    """Compute accuracy for MMLU.
-
-    Parameters
-    ----------
-    predictions : sequence of str
-        Raw model outputs.
-    references : sequence of int or str
-        Gold labels: either letter strings (A-D) or integer indices (0-3).
-    """
-    if len(predictions) != len(references):
-        raise ValueError("predictions and references must have the same length")
-
-    correct = 0
-    for pred, ref in zip(predictions, references):
-        pred_letter = normalize_mmlu_answer(pred)
-        ref_letter = get_ground_truth_letter(ref) if isinstance(ref, int) else str(ref).upper()
-        if pred_letter == ref_letter:
-            correct += 1
-    return correct / len(predictions) if predictions else 0.0
 
 
 def get_ground_truth_letter(answer_idx: int) -> str:
@@ -449,34 +394,3 @@ def math_equiv(a_full: str, b_full: str) -> bool:
     key = (a_full, b_full) if a_full <= b_full else (b_full, a_full)
     return _verify_cached(*key)
 
-
-def math_accuracy(
-    predictions: Sequence[str],
-    references: Sequence[str],
-) -> float:
-    """Compute MATH-500 accuracy via `math_match` over full model outputs."""
-    if len(predictions) != len(references):
-        raise ValueError("predictions and references must have the same length")
-
-    correct = sum(
-        1 for pred, ref in zip(predictions, references)
-        if math_match(pred, ref)
-    )
-    return correct / len(predictions) if predictions else 0.0
-
-
-# ---------------------------------------------------------------------------
-# Results helpers
-# ---------------------------------------------------------------------------
-
-def print_results(results: dict[str, float], title: str = "Results") -> None:
-    """Pretty-print a dictionary of metric → value pairs."""
-    print(f"\n{'=' * 50}")
-    print(f"  {title}")
-    print(f"{'=' * 50}")
-    for metric, value in results.items():
-        if isinstance(value, float):
-            print(f"  {metric:<30s} {value:>8.2%}")
-        else:
-            print(f"  {metric:<30s} {value!s:>8s}")
-    print(f"{'=' * 50}\n")

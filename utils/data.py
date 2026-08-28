@@ -14,7 +14,6 @@ Connection to the project WPs
 
 from __future__ import annotations
 
-import random
 from typing import Optional, Sequence
 
 from datasets import load_dataset, Dataset  # type: ignore
@@ -69,29 +68,6 @@ def extract_gsm8k_answer(answer_text: str) -> str:
         return _canonicalize_number(raw)
     except (ValueError, OverflowError, ImportError):
         return raw
-
-
-def format_gsm8k_prompt(question: str) -> str:
-    """Format a GSM8K question into a prompt string with answer-format instructions.
-
-    Appends a standardised instruction telling the model to give its final
-    numerical answer in the `#### <number>` format used by GSM8K.
-
-    Parameters
-    ----------
-    question : str
-        The raw GSM8K question text.
-
-    Returns
-    -------
-    str
-        A formatted prompt ready to be sent to a model.
-    """
-    return (
-        f"{question}\n\n"
-        "IMPORTANT: Provide the final numerical answer at the very end "
-        "formatted exactly as '#### [number]'."
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -196,72 +172,3 @@ def load_math500(
     if n_samples is not None:
         ds = ds.shuffle(seed=seed).select(range(min(n_samples, len(ds))))
     return ds
-
-
-def format_math_prompt(problem: str) -> str:
-    """Format a MATH-500 problem using EvalScope's competition-math template.
-
-    Parameters
-    ----------
-    problem : str
-        The raw MATH-500 problem statement.
-
-    Returns
-    -------
-    str
-        A formatted prompt ready to be sent to a model. Notebooks build
-        their own equivalent `PromptTemplate` (as with GSM8K); this
-        function documents the canonical wording in one importable place.
-    """
-    return (
-        f"Problem:\n{problem}\n\n"
-        "Please reason step by step, and put your final answer within \\boxed{}."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Sample extension (SC's MMLU eval_size differs from the v2.x baseline's)
-# ---------------------------------------------------------------------------
-
-def extend_sample(
-    items: Sequence,
-    base_n: int,
-    extra_n: int,
-    seed: int,
-    extra_seed: int,
-) -> list:
-    """Extend a baseline-seeded sample with extra items, base as an exact prefix.
-
-    `random.sample` selects positions purely as a function of population
-    length, so sampling indices with `random.Random(seed)` reproduces the
-    same items as the baselines' `random.seed(seed); random.sample(...)`
-    call. The first `base_n` items therefore pair exactly with the v2.x
-    baseline subset; the remaining `extra_n` are drawn from what's left
-    under an independent `extra_seed`, so extending never perturbs the base
-    draw. Used for MMLU, whose SC eval_size (128) differs from the v2.x
-    baselines' (100).
-
-    Parameters
-    ----------
-    items : Sequence
-        The full pool to sample from (e.g. a loaded HF `Dataset`).
-    base_n : int
-        Size of the baseline-reproducing prefix.
-    extra_n : int
-        Number of additional items to draw from the remainder.
-    seed : int
-        Seed reproducing the baseline's `base_n` subset.
-    extra_seed : int
-        Independent seed for the `extra_n` extension.
-
-    Returns
-    -------
-    list
-        `base_n + extra_n` items: the exact baseline prefix, then the extras.
-    """
-    pool = list(items)
-    idx_pool = list(range(len(pool)))
-    base_idx = random.Random(seed).sample(idx_pool, base_n)
-    remainder_idx = [i for i in idx_pool if i not in set(base_idx)]
-    extra_idx = random.Random(extra_seed).sample(remainder_idx, extra_n)
-    return [pool[i] for i in base_idx] + [pool[i] for i in extra_idx]

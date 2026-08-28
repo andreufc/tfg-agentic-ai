@@ -22,14 +22,9 @@ import hashlib
 import random
 from dataclasses import dataclass
 
-from utils.registry import DATASETS, MATRICES_ARTIFACT_PREFIX, get_model
+from utils.registry import MATRICES_ARTIFACT_PREFIX, _check_dataset, get_model
 
 SLOT_SAMPLE_SEED = 3407
-
-
-def _check_dataset(dataset: str) -> None:
-    if dataset not in DATASETS:
-        raise ValueError(f"Unknown dataset {dataset!r}; expected one of {DATASETS}")
 
 
 @dataclass(frozen=True)

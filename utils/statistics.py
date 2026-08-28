@@ -46,13 +46,6 @@ Every CI and inferential variance is computed on the N per-problem means,
 never on the flattened N x m array. The flattened statistics (mean, std,
 percentiles, skewness, ...) are retained as descriptive diagnostics only.
 
-Note
-----
-print_throughput_report is implemented for a forthcoming
-throughput_statistics estimator (tokens/s with mean-of-ratios as the
-canonical value). Until that estimator lands, callers must assemble its
-input dict by hand: see the function's docstring for the expected shape.
-
 References
 ----------
 - Wilson (1927), JASA 22(158), 209–212.
@@ -1037,43 +1030,6 @@ def print_token_report(
 ) -> None:
     """Print a formatted token-count report from :func:`token_statistics`."""
     print_metric_report(label, result, unit=unit)
-
-
-def print_throughput_report(
-    label: str,
-    result: dict,
-) -> None:
-    """Print a formatted throughput (tok/s) report.
-
-    Expects result with keys: mean, std, cv, ci_lower, ci_upper, ci_method,
-    alpha, aggregate, aggregate_ci, percentiles, n_problems, n_seeds, n_total,
-    n_bootstrap: the mean-of-ratios canonical estimate plus the ratio-of-means
-    aggregate as a supplementary cross-check (see module docstring note on the
-    forthcoming throughput_statistics estimator).
-    """
-    ci_pct = int(round((1.0 - result["alpha"]) * 100))
-    agg_lo, agg_hi = result["aggregate_ci"]
-    print(f"\n{'=' * 55}")
-    print(f"  {label} — Throughput (tok/s)")
-    print(f"{'=' * 55}")
-    print(f"  ── Canonical: mean-of-ratios [batch=1, per-run] ──")
-    print(f"  Mean tok/s                 {result['mean']:>9.4f}")
-    print(f"  {ci_pct}% BCa CI (tok/s)          [{result['ci_lower']:.4f}, {result['ci_upper']:.4f}]  [{result['ci_method']}]")
-    print(f"  Std tok/s                  {result['std']:>9.4f}")
-    print(f"  CV                         {result['cv']:>9.4f}")
-    print(f"  ── Supplementary: ratio-of-means [system aggregate] ──")
-    print(f"  Aggregate tok/s            {result['aggregate']:>9.4f}")
-    print(f"  Aggregate {ci_pct}% CI (tok/s)   [{agg_lo:.4f}, {agg_hi:.4f}]")
-    print(f"  ── Percentiles ──")
-    pct = result["percentiles"]
-    print(f"  Median / P50 (tok/s)       {pct['p50']:>9.4f}")
-    print(f"  P25 (tok/s)                {pct['p25']:>9.4f}")
-    print(f"  P75 (tok/s)                {pct['p75']:>9.4f}")
-    print(f"  P95 (tok/s)                {pct['p95']:>9.4f}")
-    print(f"  ── Sample ──")
-    print(f"  Problems x Seeds           {result['n_problems']} x {result['n_seeds']}  (n={result['n_total']})")
-    print(f"  Bootstrap replications     {result['n_bootstrap']}")
-    print(f"{'=' * 55}\n")
 
 
 def print_overhead_ratio_report(

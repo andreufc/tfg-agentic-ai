@@ -142,23 +142,6 @@ GSM8K_SPEC = BenchmarkSpec(
     render_task=lambda item: item["question"],
 )
 
-BENCHMARK_SPECS: dict[str, BenchmarkSpec] = {
-    "math500": MATH500_SPEC,
-    "mmlu": MMLU_SPEC,
-    "gsm8k": GSM8K_SPEC,
-}
-
-
-def get_benchmark_spec(name: str) -> BenchmarkSpec:
-    """Look up a :class:`BenchmarkSpec` by dataset name (e.g. `DATASET`)."""
-    try:
-        return BENCHMARK_SPECS[name]
-    except KeyError:
-        raise ValueError(
-            f"Unknown benchmark {name!r}; expected one of {sorted(BENCHMARK_SPECS)}"
-        ) from None
-
-
 # ---------------------------------------------------------------------------
 # Grouping: one implementation for every benchmark
 # ---------------------------------------------------------------------------
