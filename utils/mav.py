@@ -18,10 +18,12 @@ always its title (see the MMLU-AV1 note below):
     step_by_step  max_new_tokens=1024  "Go over each step ..." (iterates the
                                          candidate's own steps)
 
-Every subset has exactly 4 AVs: AV1 is always direct; MATH-S1/MMLU-S1 are
-otherwise 2 reasoning + 1 step_by_step; MATH-S2/MMLU-S2 are otherwise 1
-reasoning + 2 step_by_step. The verdict marker every prompt itself
-specifies is 'FINAL VERIFICATION ANSWER: True' / '...: False'.
+Every subset has exactly 3 AVs (reduced from the original 4 to cut verifier
+compute): AV1 is always direct. MATH-S1/MMLU-S1 are otherwise 2 reasoning;
+MATH-S2 is otherwise 1 reasoning + 1 step_by_step; MMLU-S2 is otherwise 2
+step_by_step. MATH-S2 and MMLU-S2 are therefore no longer structurally
+parallel. The verdict marker every prompt itself specifies is
+'FINAL VERIFICATION ANSWER: True' / '...: False'.
 
 Transcription trap: both MMLU subsets' AV1 is titled "General correctness,
 Step-by-step" in the original spec, but its instruction text is
@@ -89,55 +91,49 @@ _DIRECT_INSTRUCTIONS = (
     "Do not provide any explanation or additional text."
 )
 
-# MATH - S1
-_MATH_S1_AV2_INSTRUCTIONS = (
+_SUMMARIZE_INSTRUCTIONS = (
     "Summarize the solution in your own words, explore anything you think "
     "may be incorrect. Think out loud. If you find something that's "
     "incorrect, stop and reply 'FINAL VERIFICATION ANSWER: False'. If "
     "you've gone over the solution and everything seems correct, reply "
     "'FINAL VERIFICATION ANSWER: True'."
 )
-_MATH_S1_AV3_INSTRUCTIONS = (
+_EDGE_CASES_INSTRUCTIONS = (
     "Check if the solution handles edge cases and boundary conditions, test "
     "extreme values or special cases. Think out loud. If any boundary "
     "conditions or edge cases fail, stop and reply 'FINAL VERIFICATION "
     "ANSWER: False'. If all boundary conditions and edge cases are handled "
     "correctly, reply 'FINAL VERIFICATION ANSWER: True'."
 )
-_MATH_STEP_BY_STEP_MATH_CORRECTNESS_INSTRUCTIONS = (
-    "Go over each step in the proposed solution and check whether it is "
-    "mathematically correct. Think out loud. If you reach a step that is "
-    "incorrect, stop and reply 'FINAL VERIFICATION ANSWER: False'. If "
-    "you get to the end of all the steps and each step was correct, reply "
-    "'FINAL VERIFICATION ANSWER: True'."
-)
-
-# MATH - S2
-_MATH_S2_AV2_INSTRUCTIONS = (
+_COMMON_MISTAKES_INSTRUCTIONS = (
     "Check if the solution has any common mistakes, calculation errors, or "
     "misconceptions that typically found in this type of problem. Think out "
     "loud. If you find any common mistakes, stop and reply 'FINAL "
     "VERIFICATION ANSWER: False'. If no common mistakes are found, reply "
     "'FINAL VERIFICATION ANSWER: True'."
 )
-_MATH_S2_AV3_INSTRUCTIONS = (
+_MATH_CORRECTNESS_INSTRUCTIONS = (
     "Go over each step in the proposed solution and check whether it is "
-    "logically sound. Think out loud. If you reach a step that is not "
-    "logically sound, stop and reply 'FINAL VERIFICATION ANSWER: False'. "
-    "If you get to the end of all the steps and each step was logically "
-    "sound, reply 'FINAL VERIFICATION ANSWER: True'."
+    "mathematically correct. Think out loud. If you reach a step that is "
+    "incorrect, stop and reply 'FINAL VERIFICATION ANSWER: False'. If "
+    "you get to the end of all the steps and each step was correct, reply "
+    "'FINAL VERIFICATION ANSWER: True'."
 )
-
-# MMLU - S1
-_MMLU_S1_AV2_INSTRUCTIONS = _MATH_S1_AV2_INSTRUCTIONS
-_MMLU_S1_AV3_INSTRUCTIONS = (
+_EXPLAIN_DIFFERENTLY_INSTRUCTIONS = (
     "Explain the solution in a different way than it was presented. Try to "
     "find any flaws in the solution. Think out loud. If you find something "
     "that's incorrect, stop and reply 'FINAL VERIFICATION ANSWER: False'. "
     "If you've gone over the solution and everything seems correct, reply "
     "'FINAL VERIFICATION ANSWER: True'."
 )
-_MMLU_STEP_BY_STEP_FACTUAL_CORRECTNESS_INSTRUCTIONS = (
+_LOGICAL_SOUNDNESS_INSTRUCTIONS = (
+    "Go over each step in the proposed solution and check whether it is "
+    "logically sound. Think out loud. If you reach a step that is not "
+    "logically sound, stop and reply 'FINAL VERIFICATION ANSWER: False'. "
+    "If you get to the end of all the steps and each step was logically "
+    "sound, reply 'FINAL VERIFICATION ANSWER: True'."
+)
+_FACTUAL_CORRECTNESS_INSTRUCTIONS = (
     "Go over each step in the proposed solution and check whether the facts "
     "presented are correct. Think out loud. If you reach a step with "
     "incorrect facts, stop and reply 'FINAL VERIFICATION ANSWER: False'. "
@@ -145,72 +141,63 @@ _MMLU_STEP_BY_STEP_FACTUAL_CORRECTNESS_INSTRUCTIONS = (
     "facts, reply 'FINAL VERIFICATION ANSWER: True'."
 )
 
-# MMLU - S2
-_MMLU_S2_AV2_INSTRUCTIONS = (
-    "Check if the solution correctly applies relevant domain knowledge, "
-    "established theories, and standard practices for this type of "
-    "problem. Think out loud. If any domain knowledge is misapplied or "
-    "violated, stop and reply 'FINAL VERIFICATION ANSWER: False'. If all "
-    "domain-specific knowledge is correctly applied, reply 'FINAL "
-    "VERIFICATION ANSWER: True'."
-)
-_MMLU_S2_AV3_INSTRUCTIONS = (
-    "Go over each step in the proposed solution and check whether it is "
-    "logically sound. Think out loud. If you reach a step that is not "
-    "logically sound, stop and reply 'FINAL VERIFICATION ANSWER: False'. "
-    "If you get to the end of all the steps and each step was logically "
-    "sound, reply 'FINAL VERIFICATION ANSWER: True'."
-)
-
 
 # ---------------------------------------------------------------------------
 # MAV_ASPECTS: {dataset: {aspect_id: {prompt, strategy, max_new_tokens}}}
 # ---------------------------------------------------------------------------
 
-def _aspect(preamble: str, instructions: str, strategy: str) -> dict:
+def _aspect(preamble: str, instructions: str, strategy: str, intention: str) -> dict:
     return {
         "prompt": _prompt(preamble, instructions),
         "strategy": strategy,
         "max_new_tokens": STRATEGY_MAX_NEW_TOKENS[strategy],
+        "intention": intention,
     }
 
 
 MAV_ASPECTS: dict[str, dict[str, dict]] = {
     "math500": {
-        "math-s1-av1": _aspect(_MATH_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct"),
-        "math-s1-av2": _aspect(_MATH_PREAMBLE, _MATH_S1_AV2_INSTRUCTIONS, "reasoning"),
-        "math-s1-av3": _aspect(_MATH_PREAMBLE, _MATH_S1_AV3_INSTRUCTIONS, "reasoning"),
-        "math-s1-av4": _aspect(_MATH_PREAMBLE, _MATH_STEP_BY_STEP_MATH_CORRECTNESS_INSTRUCTIONS, "step_by_step"),
-        "math-s2-av1": _aspect(_MATH_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct"),
-        "math-s2-av2": _aspect(_MATH_PREAMBLE, _MATH_S2_AV2_INSTRUCTIONS, "reasoning"),
-        "math-s2-av3": _aspect(_MATH_PREAMBLE, _MATH_S2_AV3_INSTRUCTIONS, "step_by_step"),
-        "math-s2-av4": _aspect(_MATH_PREAMBLE, _MATH_STEP_BY_STEP_MATH_CORRECTNESS_INSTRUCTIONS, "step_by_step"),
+        "math-s1-direct": _aspect(_MATH_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct", "direct"),
+        "math-s1-summarize": _aspect(_MATH_PREAMBLE, _SUMMARIZE_INSTRUCTIONS, "reasoning", "summarize"),
+        "math-s1-edge-cases": _aspect(_MATH_PREAMBLE, _EDGE_CASES_INSTRUCTIONS, "reasoning", "edge_cases"),
+        "math-s2-direct": _aspect(_MATH_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct", "direct"),
+        "math-s2-common-mistakes": _aspect(_MATH_PREAMBLE, _COMMON_MISTAKES_INSTRUCTIONS, "reasoning", "common_mistakes"),
+        "math-s2-math-correctness": _aspect(_MATH_PREAMBLE, _MATH_CORRECTNESS_INSTRUCTIONS, "step_by_step", "math_correctness"),
     },
     "mmlu": {
-        # AV1 is titled "General correctness, Step-by-step" in both MMLU
+        # direct is titled "General correctness, Step-by-step" in both MMLU
         # subsets, but its text is byte-identical to the direct prompt
         # (classified by text, not title; see module docstring).
-        "mmlu-s1-av1": _aspect(_MMLU_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct"),
-        "mmlu-s1-av2": _aspect(_MMLU_PREAMBLE, _MMLU_S1_AV2_INSTRUCTIONS, "reasoning"),
-        "mmlu-s1-av3": _aspect(_MMLU_PREAMBLE, _MMLU_S1_AV3_INSTRUCTIONS, "reasoning"),
-        "mmlu-s1-av4": _aspect(_MMLU_PREAMBLE, _MMLU_STEP_BY_STEP_FACTUAL_CORRECTNESS_INSTRUCTIONS, "step_by_step"),
-        "mmlu-s2-av1": _aspect(_MMLU_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct"),
-        "mmlu-s2-av2": _aspect(_MMLU_PREAMBLE, _MMLU_S2_AV2_INSTRUCTIONS, "reasoning"),
-        "mmlu-s2-av3": _aspect(_MMLU_PREAMBLE, _MMLU_S2_AV3_INSTRUCTIONS, "step_by_step"),
-        "mmlu-s2-av4": _aspect(_MMLU_PREAMBLE, _MMLU_STEP_BY_STEP_FACTUAL_CORRECTNESS_INSTRUCTIONS, "step_by_step"),
+        "mmlu-s1-direct": _aspect(_MMLU_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct", "direct"),
+        "mmlu-s1-summarize": _aspect(_MMLU_PREAMBLE, _SUMMARIZE_INSTRUCTIONS, "reasoning", "summarize"),
+        "mmlu-s1-explain-differently": _aspect(_MMLU_PREAMBLE, _EXPLAIN_DIFFERENTLY_INSTRUCTIONS, "reasoning", "explain_differently"),
+        "mmlu-s2-direct": _aspect(_MMLU_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct", "direct"),
+        "mmlu-s2-logical-soundness": _aspect(_MMLU_PREAMBLE, _LOGICAL_SOUNDNESS_INSTRUCTIONS, "step_by_step", "logical_soundness"),
+        "mmlu-s2-factual-correctness": _aspect(_MMLU_PREAMBLE, _FACTUAL_CORRECTNESS_INSTRUCTIONS, "step_by_step", "factual_correctness"),
     },
 }
 
 MAV_ASPECT_SUBSETS: dict[str, dict[str, list[str]]] = {
     "math500": {
-        "S1": ["math-s1-av1", "math-s1-av2", "math-s1-av3", "math-s1-av4"],
-        "S2": ["math-s2-av1", "math-s2-av2", "math-s2-av3", "math-s2-av4"],
+        "S1": ["math-s1-direct", "math-s1-summarize", "math-s1-edge-cases"],
+        "S2": ["math-s2-direct", "math-s2-common-mistakes", "math-s2-math-correctness"],
     },
     "mmlu": {
-        "S1": ["mmlu-s1-av1", "mmlu-s1-av2", "mmlu-s1-av3", "mmlu-s1-av4"],
-        "S2": ["mmlu-s2-av1", "mmlu-s2-av2", "mmlu-s2-av3", "mmlu-s2-av4"],
+        "S1": ["mmlu-s1-direct", "mmlu-s1-summarize", "mmlu-s1-explain-differently"],
+        "S2": ["mmlu-s2-direct", "mmlu-s2-logical-soundness", "mmlu-s2-factual-correctness"],
     },
 }
+
+
+def av_position_labels(aspect_ids: Sequence[str]) -> dict[str, str]:
+    """Map each aspect_id to its generic AV1/AV2/AV3 position label.
+
+    Position, not aspect_id, is comparable across subsets: S1 and S2 use
+    different aspect_ids for AV2/AV3, but both have a "position 1" AV.
+    Built once per notebook run from MAV_ASPECT_SUBSETS[dataset][subset_id]
+    and reused for both per-problem metrics and run-level summary stats.
+    """
+    return {aspect_id: f"AV{i + 1}" for i, aspect_id in enumerate(aspect_ids)}
 
 
 # ---------------------------------------------------------------------------
@@ -376,8 +363,9 @@ def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict
     Returns
     -------
     dict
-        Per aspect_id: precision, recall, accuracy, n. precision/recall are
-        None when undefined (no approvals, or no correct candidates seen).
+        Per aspect_id: precision, recall, f1, accuracy, n. precision/recall
+        (and therefore f1) are None when undefined (no approvals, or no
+        correct candidates seen).
     """
     by_aspect: dict[str, list[Mapping[str, Any]]] = {}
     for approval in approvals:
@@ -398,37 +386,48 @@ def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict
             else:
                 tn += 1
         n = len(aspect_approvals)
+        precision = tp / (tp + fp) if (tp + fp) else None
+        recall = tp / (tp + fn) if (tp + fn) else None
         result[aspect_id] = {
-            "precision": tp / (tp + fp) if (tp + fp) else None,
-            "recall": tp / (tp + fn) if (tp + fn) else None,
+            "precision": precision,
+            "recall": recall,
+            "f1": (
+                2 * precision * recall / (precision + recall)
+                if precision is not None and recall is not None and (precision + recall) > 0
+                else None
+            ),
             "accuracy": (tp + tn) / n if n else 0.0,
             "n": n,
         }
     return result
 
 
-def oracle_and_recovery(records: Sequence[Mapping[str, Any]]) -> dict:
-    """Oracle upper bound and recovery rate for a completed BoN-MAV run.
+def per_problem_av_metrics(
+    approvals: Sequence[Mapping[str, Any]],
+    av_labels: Mapping[str, str],
+    candidate_correct: Sequence[bool],
+) -> dict[str, dict[str, float]]:
+    """Per-AV average latency, output tokens and accuracy, for one problem.
 
-    oracle_accuracy is the fraction of problems where at least one of the N
-    replayed candidates is correct, the best any verifier could achieve
-    since BoN-MAV only selects among existing candidates. recovery_rate
-    isolates selection quality from candidate quality: of the problems where
-    a correct candidate existed, what fraction did the verifier actually
-    select? Each record must carry candidate_correct (from
-    `candidate_correctness`) and correct (the selected candidate's own
-    correctness, already computed by every BoN-MAV notebook).
+    Reduces one problem's flat (candidate x aspect) approvals to one row
+    per AV label, averaged -- never summed -- over the candidates that AV
+    verified in this problem. "accuracy" reuses verifier_quality_diagnostics'
+    point-estimate rule scoped to a single problem instead of a whole run.
     """
-    n_recoverable = 0
-    n_recovered = 0
-    for r in records:
-        if any(r["candidate_correct"]):
-            n_recoverable += 1
-            if r["correct"]:
-                n_recovered += 1
-    n = len(records)
-    return {
-        "oracle_accuracy": n_recoverable / n if n else 0.0,
-        "n_recoverable": n_recoverable,
-        "recovery_rate": n_recovered / n_recoverable if n_recoverable else None,
-    }
+    by_label: dict[str, list[Mapping[str, Any]]] = {}
+    for approval in approvals:
+        by_label.setdefault(av_labels[approval["aspect_id"]], []).append(approval)
+
+    result: dict[str, dict[str, float]] = {}
+    for label, items in by_label.items():
+        n = len(items)
+        result[label] = {
+            "latency_s": sum(a["latency_s"] for a in items) / n,
+            "output_tokens": sum(a["output_tokens"] for a in items) / n,
+            "accuracy": sum(
+                1 for a in items if (a["verdict"] is True) == candidate_correct[a["candidate_idx"]]
+            ) / n,
+        }
+    return result
+
+
