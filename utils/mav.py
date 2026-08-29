@@ -14,8 +14,8 @@ always its title (see the MMLU-AV1 note below):
 
     direct        max_new_tokens=128   "Respond with ONLY ... Do not provide
                                          any explanation or additional text."
-    reasoning     max_new_tokens=512   "Think out loud" (reasons freely)
-    step_by_step  max_new_tokens=1024  "Go over each step ..." (iterates the
+    reasoning     max_new_tokens=768   "Think out loud" (reasons freely)
+    step_by_step  max_new_tokens=1280  "Go over each step ..." (iterates the
                                          candidate's own steps)
 
 Every subset has exactly 3 AVs (reduced from the original 4 to cut verifier
@@ -30,6 +30,11 @@ Step-by-step" in the original spec, but its instruction text is
 byte-identical to the direct prompt every other subset's AV1 uses. This
 module classifies by instruction text, not title, so it is correctly
 strategy="direct" here; see test_mav.py's explicit pin on this.
+
+To address a measured parse-rate failure on the BoN-MAV artifacts (sub-4B
+verifiers truncating before reaching verdict markers), each non-direct
+instruction has one short sentence appended: "Keep your analysis under N words."
+with N sized close to STRATEGY_MAX_NEW_TOKENS. See _WORD_BUDGET_SUFFIX and _aspect().
 
 Connection to the project WPs
 ------------------------------
@@ -47,8 +52,16 @@ from utils.voting import BenchmarkSpec, group_equivalent
 
 STRATEGY_MAX_NEW_TOKENS: dict[str, int] = {
     "direct": 128,
-    "reasoning": 512,
-    "step_by_step": 1024,
+    "reasoning": 768,
+    "step_by_step": 1280,
+}
+
+# Empty for "direct" (already forbids explanation); others sized at roughly
+# 0.75 words/token to leave reasoning room without hitting the token cap.
+_WORD_BUDGET_SUFFIX: dict[str, str] = {
+    "direct": "",
+    "reasoning": " Keep your analysis under 500 words.",
+    "step_by_step": " Keep your analysis under 900 words.",
 }
 
 
@@ -147,6 +160,7 @@ _FACTUAL_CORRECTNESS_INSTRUCTIONS = (
 # ---------------------------------------------------------------------------
 
 def _aspect(preamble: str, instructions: str, strategy: str, intention: str) -> dict:
+    instructions = instructions + _WORD_BUDGET_SUFFIX[strategy]
     return {
         "prompt": _prompt(preamble, instructions),
         "strategy": strategy,
@@ -200,42 +214,103 @@ def av_position_labels(aspect_ids: Sequence[str]) -> dict[str, str]:
     return {aspect_id: f"AV{i + 1}" for i, aspect_id in enumerate(aspect_ids)}
 
 
+def aspect_prompt(dataset: str, aspect_id: str, *, no_think: bool = False) -> str:
+    """
+    Retrieves the prompt for a given dataset and aspect_id, 
+    optionally adding /no_think flag (convention for all Qwen3 agents in this project).
+    """
+    prompt = MAV_ASPECTS[dataset][aspect_id]["prompt"]
+    return f"/no_think\n\n{prompt}" if no_think else prompt
+
+
 # ---------------------------------------------------------------------------
 # Verdict parsing
 # ---------------------------------------------------------------------------
 
+# Matches only closed <think>...</think> blocks. Unclosed blocks indicate
+# truncation and their content is discarded.
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_UNCLOSED_THINK_RE = re.compile(r"<think>", re.IGNORECASE)
+
 _VERDICT_RE = re.compile(
     r"FINAL VERIFICATION ANSWER:\s*[\"''‘]?\s*(True|False)\s*[\"''‘]?",
     re.IGNORECASE,
 )
-_FALLBACK_RE = re.compile(r"\b(True|False|Yes|No)\b", re.IGNORECASE)
+
+# Anchored fallback patterns tried only over text tail to avoid stray
+# True/False matches in reasoning prose. Yes/No dropped (never requested).
+_FALLBACK_TAIL_CHARS = 500
+_FALLBACK_PATTERNS = (
+    re.compile(r"VERIFICATION ANSWER:\s*[\"''‘]?\s*(True|False)\s*[\"''‘]?", re.IGNORECASE),
+    re.compile(r"\bANSWER:\s*[\"''‘]?\s*(True|False)\s*[\"''‘]?", re.IGNORECASE),
+    re.compile(r"^\s*(True|False)\s*$", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"\\boxed\{\s*(True|False)\s*\}", re.IGNORECASE),
+)
+
+
+def _fallback_verdict(cleaned: str) -> Optional[bool]:
+    tail = cleaned[-_FALLBACK_TAIL_CHARS:]
+    for pattern in _FALLBACK_PATTERNS:
+        matches = list(pattern.finditer(tail))
+        if matches:
+            return matches[-1].group(1).lower() == "true"
+    return None
+
+
+def parse_verdict_detail(text: str) -> dict:
+    """Parse a verifier's raw output into {"verdict": bool|None, "source": str}.
+
+    source is one of:
+      "marker"          -- a real "FINAL VERIFICATION ANSWER: True/False".
+      "fallback"        -- no exact marker, but an anchored fallback form
+                            matched in the tail (see _FALLBACK_PATTERNS).
+      "truncated_think" -- generation was cut off inside an unclosed
+                            <think> block; nothing after the cut point is
+                            trustworthy, so this is always verdict=None.
+      "no_marker"       -- finished generating (or has no think block) but
+                            never produced anything verdict-shaped.
+      "empty"           -- empty text.
+
+    Any closed <think>...</think> block is stripped first (present even
+    under /no_think, as an empty pair). Whatever *closed*-block stripping
+    leaves behind is then checked for an unclosed "<think>": if found,
+    everything from that point on is discarded before parsing, since a
+    verifier that ran out of budget mid-thought has not reached its
+    verdict yet -- scoring text from inside that abandoned reasoning as a
+    verdict is exactly the phantom-verdict failure this function exists to
+    prevent.
+    """
+    if not text:
+        return {"verdict": None, "source": "empty"}
+
+    cleaned = _THINK_RE.sub("", text)
+
+    unclosed = _UNCLOSED_THINK_RE.search(cleaned)
+    truncated_think = unclosed is not None
+    if truncated_think:
+        cleaned = cleaned[: unclosed.start()]
+
+    matches = list(_VERDICT_RE.finditer(cleaned))
+    if matches:
+        return {"verdict": matches[-1].group(1).lower() == "true", "source": "marker"}
+
+    if truncated_think:
+        return {"verdict": None, "source": "truncated_think"}
+
+    verdict = _fallback_verdict(cleaned)
+    if verdict is not None:
+        return {"verdict": verdict, "source": "fallback"}
+
+    return {"verdict": None, "source": "no_marker"}
 
 
 def parse_verdict(text: str) -> Optional[bool]:
     """Parse a verifier's raw output into True/False/None.
 
-    Strips a leading <think>...</think> block, then takes the last "FINAL
-    VERIFICATION ANSWER: (True|False)" marker (case-insensitive, tolerant
-    of straight or curly quoting; the source prompts use curly quotes but
-    a smaller verifier may echo straight quotes). Falls back to the last
-    standalone True/False/Yes/No if the exact marker is missing (a
-    smaller verifier may drift off-format). Anything else, including
-    empty text, is None: scored as no approval, never as approval.
+    Thin wrapper around parse_verdict_detail for call sites that only need
+    the verdict, not why it was (or wasn't) extracted.
     """
-    if not text:
-        return None
-    cleaned = _THINK_RE.sub("", text)
-
-    matches = list(_VERDICT_RE.finditer(cleaned))
-    if matches:
-        return matches[-1].group(1).lower() == "true"
-
-    fallback_matches = list(_FALLBACK_RE.finditer(cleaned))
-    if fallback_matches:
-        return fallback_matches[-1].group(1).lower() in ("true", "yes")
-
-    return None
+    return parse_verdict_detail(text)["verdict"]
 
 
 # ---------------------------------------------------------------------------
@@ -252,16 +327,12 @@ def select_bon_candidate(
 ) -> dict:
     """Score candidates by approval count; ties broken by SC-among-tied.
 
-    Score is the number of approving verdicts (verdict is True) per
-    candidate, over every approval whose candidate_idx matches.
-    Unparseable verdicts and disapprovals both score zero, never approval.
-
-    A tie among top-scoring candidates is broken by grouping only the
-    tied candidates' answers via spec.equiv (utils.voting.group_equivalent,
-    the same union-find grouper SC uses): the largest resulting
-    equivalence class wins (the tied candidates that most agree with each
-    other), with any further tie broken by a uniform random draw from the
-    shared rng.
+    Each candidate's score is its number of approving verdicts. A tie among
+    top-scoring candidates is broken by grouping only those candidates via
+    spec.equiv, applied over the value spec.compare_on names (full answer
+    text or spec.extract's prediction, depending on the benchmark); the
+    largest resulting equivalence class wins, with any remaining tie broken
+    by a uniform random draw from the shared rng.
     """
     scores = [0] * n_candidates
     for approval in approvals:
@@ -277,7 +348,11 @@ def select_bon_candidate(
         tie_break_used = False
     else:
         tied_answers = [candidate_answers[i] for i in top_indices]
-        labels = group_equivalent(tied_answers, spec.equiv)
+        tied_values = (
+            tied_answers if spec.compare_on == "answer"
+            else [spec.extract(a) if a else None for a in tied_answers]
+        )
+        labels = group_equivalent(tied_values, spec.equiv)
         label_counts = Counter(label for label in labels if label != -1)
 
         if label_counts:
