@@ -99,22 +99,11 @@ def sample_slots(
     n_gens_by_model: int = 5,
     sample_seed: int = SLOT_SAMPLE_SEED,
 ) -> tuple[tuple[str, int], ...]:
-    """Return one (model_key, gen_id) per slot, in ens.slots order.
+    """Return one (model_key, gen_id) per slot, drawn deterministically.
 
-    Fixed a priori, no cherry-picking: the draw key is
-    sha256(f"{sample_seed}:{dataset}:{ensemble_id}:{problem_id}:{rep}"),
-    truncated to a 64-bit int seed for random.Random(...). The key
-    deliberately excludes the verifier, so BoN-MAV reusing this function
-    with rep=0 gets candidate sets identical across verifier configurations
-    and identical to MAJ's own rep-0 draw for the same ensemble_id.
-
-    For each distinct model_key in the ensemble, its slot count of gen_ids
-    is drawn without replacement from range(n_gens_by_model); distinct
-    models are iterated in the order they first appear in ens.slots, so the
-    draw never depends on dict/set ordering. A model occupying two slots
-    (E4, E5) gets two different generations. Reps are independent draws
-    (they may coincide by chance) by design: the 2 MAJ reps estimate the
-    ensemble's own sampling variance.
+    The seed is derived from sample_seed, dataset, problem_id, and rep.
+    For each distinct model_key, draw its slot count of gen_ids without
+    replacement from range(n_gens_by_model).
     """
     key = f"{sample_seed}:{dataset}:{ens.ensemble_id}:{problem_id}:{rep}"
     seed_int = int(hashlib.sha256(key.encode()).hexdigest(), 16) % (2**64)

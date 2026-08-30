@@ -149,9 +149,7 @@ def gpu_peak_mem_mb(device: DeviceLike = None) -> float:
     return 0.0
 
 
-# ---------------------------------------------------------------------------
 # Throughput
-# ---------------------------------------------------------------------------
 
 def tokens_per_second(
     output_tokens: int, elapsed_s: float, *, round_dp: Optional[int] = 4
@@ -170,10 +168,7 @@ def tokens_per_second(
     elapsed_s : float
         Wall-clock seconds of the full chain.invoke call.
     round_dp : int | None
-        Decimal places to round to (default 4). Pass None for the
-        unrounded ratio, used by utils.voting.compose_generation_metrics,
-        which recomputes throughput from summed or per-call totals rather
-        than a single sample and should not carry this module's own rounding.
+        Decimal places to round to (default 4), or None for unrounded.
 
     Returns
     -------
@@ -186,9 +181,7 @@ def tokens_per_second(
     return round(rate, round_dp) if round_dp is not None else rate
 
 
-# ---------------------------------------------------------------------------
-# Instrumented invoke (composes the primitives above around one chain.invoke)
-# ---------------------------------------------------------------------------
+# Instrumented invoke
 
 def timed_invoke(chain: Any, prompt_template: Any, tokenizer: Any, inputs: dict) -> dict:
     """Render, time, and measure a single chain.invoke call.

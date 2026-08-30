@@ -120,10 +120,8 @@ def build_hf_langchain_llm(
         # Base/non-instruct path: raw rendered prompt straight to the pipeline.
         return HuggingFacePipeline(pipeline=pipe)
 
-    # Instruct path: pass a chat list so the pipeline applies the chat template
-    # internally, getting instruct control tokens to the model without a string
-    # round-trip. Correct decoding requires the mistral-common tokenizer backend
-    # (see load_model_and_tokenizer); a plain LlamaTokenizer garbles spacing.
+    # Instruct path: use the chat template by passing messages to the pipeline.
+    # The tokenizer handles instruct control tokens and formatting.
     base_messages = (
         [{"role": "system", "content": system_prompt}] if system_prompt else []
     )
