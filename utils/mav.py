@@ -14,7 +14,7 @@ always its title (see the MMLU-AV1 note below):
 
     direct        max_new_tokens=128   "Respond with ONLY ... Do not provide
                                          any explanation or additional text."
-    reasoning     max_new_tokens=768   "Think out loud" (reasons freely)
+    reasoning     max_new_tokens=1024  "Think out loud" (reasons freely)
     step_by_step  max_new_tokens=1280  "Go over each step ..." (iterates the
                                          candidate's own steps)
 
@@ -46,7 +46,7 @@ from utils.voting import BenchmarkSpec, group_equivalent
 
 STRATEGY_MAX_NEW_TOKENS: dict[str, int] = {
     "direct": 128,
-    "reasoning": 768,
+    "reasoning": 1024,
     "step_by_step": 1280,
 }
 
@@ -470,7 +470,7 @@ def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict
       strict (*_strict)    -- `verdict is True` only; an abstention is scored
                               as predicting incorrect. Kept so a caller that wants to
                               ignore abstentions entirely still can.
-                              
+
     Precision/recall/f1 are None when undefined (no positive predictions, or
     no correct candidates seen).
 
