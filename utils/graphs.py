@@ -222,7 +222,7 @@ def build_majority_voting_graph(
 class Approval(TypedDict):
     candidate_idx: int
     aspect_id: str
-    verdict: Optional[bool]  # None = unparseable, no approval
+    verdict: Optional[bool]  # None = unparseable; scored as an approval, not a rejection
     raw_output: str
     latency_s: float
     input_tokens: int
@@ -238,7 +238,7 @@ class BonMavState(TypedDict):
     dataset: str
     samples: Annotated[list[AgentSample], operator.add]  # the N replayed candidates
     approvals: Annotated[list[Approval], operator.add]
-    selection: Optional[dict]  # {selected_idx, scores, tie, tie_break_used}
+    selection: Optional[dict]  # {selected_idx, scores, tie, tie_break_used, abstentions, tie_break_stage}
 
 
 def build_bon_mav_graph(

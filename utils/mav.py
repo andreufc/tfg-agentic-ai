@@ -25,12 +25,6 @@ step_by_step. MATH-S2 and MMLU-S2 are therefore no longer structurally
 parallel. The verdict marker every prompt itself specifies is
 'FINAL VERIFICATION ANSWER: True' / '...: False'.
 
-Transcription trap: both MMLU subsets' AV1 is titled "General correctness,
-Step-by-step" in the original spec, but its instruction text is
-byte-identical to the direct prompt every other subset's AV1 uses. This
-module classifies by instruction text, not title, so it is correctly
-strategy="direct" here; see test_mav.py's explicit pin on this.
-
 To address a measured parse-rate failure on the BoN-MAV artifacts (sub-4B
 verifiers truncating before reaching verdict markers), each non-direct
 instruction has one short sentence appended: "Keep your analysis under N words."
@@ -94,8 +88,8 @@ def _prompt(preamble: str, instructions: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Instruction text, transcribed verbatim (including source typos) from
-# the original verifier specification
+# Instruction text, reused from the 'Multi-Agent Verification: Scaling Test-Time 
+# Compute with Multiple Verifiers' paper (Lifshitz et al., 2024)
 # ---------------------------------------------------------------------------
 
 _DIRECT_INSTRUCTIONS = (
@@ -179,9 +173,6 @@ MAV_ASPECTS: dict[str, dict[str, dict]] = {
         "math-s2-math-correctness": _aspect(_MATH_PREAMBLE, _MATH_CORRECTNESS_INSTRUCTIONS, "step_by_step", "math_correctness"),
     },
     "mmlu": {
-        # direct is titled "General correctness, Step-by-step" in both MMLU
-        # subsets, but its text is byte-identical to the direct prompt
-        # (classified by text, not title; see module docstring).
         "mmlu-s1-direct": _aspect(_MMLU_PREAMBLE, _DIRECT_INSTRUCTIONS, "direct", "direct"),
         "mmlu-s1-summarize": _aspect(_MMLU_PREAMBLE, _SUMMARIZE_INSTRUCTIONS, "reasoning", "summarize"),
         "mmlu-s1-explain-differently": _aspect(_MMLU_PREAMBLE, _EXPLAIN_DIFFERENTLY_INSTRUCTIONS, "reasoning", "explain_differently"),
@@ -227,13 +218,14 @@ def aspect_prompt(dataset: str, aspect_id: str, *, no_think: bool = False) -> st
 # Verdict parsing
 # ---------------------------------------------------------------------------
 
-# Matches only closed <think>...</think> blocks. Unclosed blocks indicate
-# truncation and their content is discarded.
-_THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
-_UNCLOSED_THINK_RE = re.compile(r"<think>", re.IGNORECASE)
+# Markdown emphasis run (bold/italic/code/strikethrough markers), tolerated
+# anywhere around the marker text since verifiers routinely wrap it, e.g.
+# "**FINAL VERIFICATION ANSWER:** True" or "ANSWER: **True**".
+_EMPH = r"[*_`~]*"
+_QUOTE = r"[\"''‘]?"
 
 _VERDICT_RE = re.compile(
-    r"FINAL VERIFICATION ANSWER:\s*[\"''‘]?\s*(True|False)\s*[\"''‘]?",
+    rf"FINAL\s+VERIFICATION\s+ANSWER{_EMPH}\s*:\s*{_EMPH}\s*{_QUOTE}\s*{_EMPH}(True|False)\b",
     re.IGNORECASE,
 )
 
@@ -241,15 +233,15 @@ _VERDICT_RE = re.compile(
 # True/False matches in reasoning prose. Yes/No dropped (never requested).
 _FALLBACK_TAIL_CHARS = 500
 _FALLBACK_PATTERNS = (
-    re.compile(r"VERIFICATION ANSWER:\s*[\"''‘]?\s*(True|False)\s*[\"''‘]?", re.IGNORECASE),
-    re.compile(r"\bANSWER:\s*[\"''‘]?\s*(True|False)\s*[\"''‘]?", re.IGNORECASE),
-    re.compile(r"^\s*(True|False)\s*$", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"\\boxed\{\s*(True|False)\s*\}", re.IGNORECASE),
+    re.compile(rf"VERIFICATION\s+ANSWER{_EMPH}\s*:\s*{_EMPH}\s*{_QUOTE}\s*{_EMPH}(True|False)\b", re.IGNORECASE),
+    re.compile(rf"\bANSWER{_EMPH}\s*:\s*{_EMPH}\s*{_QUOTE}\s*{_EMPH}(True|False)\b", re.IGNORECASE),
+    re.compile(rf"^\s*{_EMPH}(True|False){_EMPH}\s*$", re.IGNORECASE | re.MULTILINE),
+    re.compile(rf"\\boxed\{{\s*{_EMPH}(True|False){_EMPH}\s*\}}", re.IGNORECASE),
 )
 
 
-def _fallback_verdict(cleaned: str) -> Optional[bool]:
-    tail = cleaned[-_FALLBACK_TAIL_CHARS:]
+def _fallback_verdict(text: str) -> Optional[bool]:
+    tail = text[-_FALLBACK_TAIL_CHARS:]
     for pattern in _FALLBACK_PATTERNS:
         matches = list(pattern.finditer(tail))
         if matches:
@@ -257,51 +249,42 @@ def _fallback_verdict(cleaned: str) -> Optional[bool]:
     return None
 
 
-def parse_verdict_detail(text: str) -> dict:
+def parse_verdict_detail(
+    text: str, *, output_tokens: Optional[int] = None, max_new_tokens: Optional[int] = None
+) -> dict:
     """Parse a verifier's raw output into {"verdict": bool|None, "source": str}.
 
     source is one of:
-      "marker"          -- a real "FINAL VERIFICATION ANSWER: True/False".
-      "fallback"        -- no exact marker, but an anchored fallback form
-                            matched in the tail (see _FALLBACK_PATTERNS).
-      "truncated_think" -- generation was cut off inside an unclosed
-                            <think> block; nothing after the cut point is
-                            trustworthy, so this is always verdict=None.
-      "no_marker"       -- finished generating (or has no think block) but
-                            never produced anything verdict-shaped.
-      "empty"           -- empty text.
-
-    Any closed <think>...</think> block is stripped first (present even
-    under /no_think, as an empty pair). Whatever *closed*-block stripping
-    leaves behind is then checked for an unclosed "<think>": if found,
-    everything from that point on is discarded before parsing, since a
-    verifier that ran out of budget mid-thought has not reached its
-    verdict yet -- scoring text from inside that abandoned reasoning as a
-    verdict is exactly the phantom-verdict failure this function exists to
-    prevent.
+      "marker"     -- a real "FINAL VERIFICATION ANSWER: True/False", tolerant
+                      of markdown emphasis (bold/italic/code) around it.
+      "fallback"   -- no exact marker, but an anchored fallback form matched
+                      in the tail (see _FALLBACK_PATTERNS).
+      "truncated"  -- no verdict found and output_tokens >= max_new_tokens,
+                      i.e. generation was cut off by the token budget rather
+                      than the model choosing not to answer. Diagnostic only:
+                      requires both output_tokens and max_new_tokens to be
+                      passed, otherwise indistinguishable from "no_marker".
+      "no_marker"  -- finished generating but never produced anything
+                      verdict-shaped (or truncation info wasn't supplied).
+      "empty"      -- empty text.
     """
     if not text:
         return {"verdict": None, "source": "empty"}
 
-    cleaned = _THINK_RE.sub("", text)
-
-    unclosed = _UNCLOSED_THINK_RE.search(cleaned)
-    truncated_think = unclosed is not None
-    if truncated_think:
-        cleaned = cleaned[: unclosed.start()]
-
-    matches = list(_VERDICT_RE.finditer(cleaned))
+    matches = list(_VERDICT_RE.finditer(text))
     if matches:
         return {"verdict": matches[-1].group(1).lower() == "true", "source": "marker"}
 
-    if truncated_think:
-        return {"verdict": None, "source": "truncated_think"}
-
-    verdict = _fallback_verdict(cleaned)
+    verdict = _fallback_verdict(text)
     if verdict is not None:
         return {"verdict": verdict, "source": "fallback"}
 
-    return {"verdict": None, "source": "no_marker"}
+    hit_cap = (
+        output_tokens is not None
+        and max_new_tokens is not None
+        and output_tokens >= max_new_tokens
+    )
+    return {"verdict": None, "source": "truncated" if hit_cap else "no_marker"}
 
 
 def parse_verdict(text: str) -> Optional[bool]:
@@ -325,19 +308,34 @@ def select_bon_candidate(
     spec: BenchmarkSpec,
     rng,
 ) -> dict:
-    """Score candidates by approval count; ties broken by SC-among-tied.
+    """Score candidates by effective approvals; ties broken by fewest
+    abstentions, then by SC-among-tied.
 
-    Each candidate's score is its number of approving verdicts. A tie among
-    top-scoring candidates is broken by grouping only those candidates via
+    Every aspect prompt instructs the verifier to reply False only on
+    finding a concrete flaw, and True otherwise,so a verifier call that
+    never produces a parseable verdict (verdict is None) has produced no
+    rejection evidence, not a rejection. Each candidate's primary score is
+    therefore its count of effective approvals, verdict is True or
+    verdict is None, so an unparseable call does not count against the
+    candidate it was verifying. Candidates tied on that primary score are
+    then ranked by fewest None verdicts, before running the 
+    SC-among-tied rule: grouping only the still-tied candidates via
     spec.equiv, applied over the value spec.compare_on names (full answer
     text or spec.extract's prediction, depending on the benchmark); the
     largest resulting equivalence class wins, with any remaining tie broken
     by a uniform random draw from the shared rng.
     """
-    scores = [0] * n_candidates
+    n_true = [0] * n_candidates
+    abstentions = [0] * n_candidates
     for approval in approvals:
-        if approval["verdict"] is True:
-            scores[approval["candidate_idx"]] += 1
+        idx = approval["candidate_idx"]
+        verdict = approval["verdict"]
+        if verdict is True:
+            n_true[idx] += 1
+        elif verdict is None:
+            abstentions[idx] += 1
+
+    scores = [t + a for t, a in zip(n_true, abstentions)]
 
     max_score = max(scores)
     top_indices = [i for i, s in enumerate(scores) if s == max_score]
@@ -346,38 +344,52 @@ def select_bon_candidate(
     if not tie:
         selected_idx = top_indices[0]
         tie_break_used = False
+        tie_break_stage = "none"
     else:
-        tied_answers = [candidate_answers[i] for i in top_indices]
-        tied_values = (
-            tied_answers if spec.compare_on == "answer"
-            else [spec.extract(a) if a else None for a in tied_answers]
-        )
-        labels = group_equivalent(tied_values, spec.equiv)
-        label_counts = Counter(label for label in labels if label != -1)
-
-        if label_counts:
-            max_count = max(label_counts.values())
-            winning_labels = [label for label, count in label_counts.items() if count == max_count]
-            winning_label = (
-                rng.choice(winning_labels) if len(winning_labels) > 1 else winning_labels[0]
-            )
-            candidates_in_label = [
-                top_indices[i] for i, label in enumerate(labels) if label == winning_label
-            ]
-            selected_idx = (
-                rng.choice(candidates_in_label) if len(candidates_in_label) > 1 else candidates_in_label[0]
-            )
-        else:
-            # Every tied candidate abstained (no extractable answer) -> pure
-            # uniform random draw among the tied candidates.
-            selected_idx = rng.choice(top_indices)
+        min_abstentions = min(abstentions[i] for i in top_indices)
+        top_indices = [i for i in top_indices if abstentions[i] == min_abstentions]
         tie_break_used = True
+
+        if len(top_indices) == 1:
+            selected_idx = top_indices[0]
+            tie_break_stage = "abstentions"
+        else:
+            tied_answers = [candidate_answers[i] for i in top_indices]
+            tied_values = (
+                tied_answers if spec.compare_on == "answer"
+                else [spec.extract(a) if a else None for a in tied_answers]
+            )
+            labels = group_equivalent(tied_values, spec.equiv)
+            label_counts = Counter(label for label in labels if label != -1)
+
+            if label_counts:
+                max_count = max(label_counts.values())
+                winning_labels = [label for label, count in label_counts.items() if count == max_count]
+                winning_label = (
+                    rng.choice(winning_labels) if len(winning_labels) > 1 else winning_labels[0]
+                )
+                candidates_in_label = [
+                    top_indices[i] for i, label in enumerate(labels) if label == winning_label
+                ]
+                if len(candidates_in_label) > 1:
+                    selected_idx = rng.choice(candidates_in_label)
+                    tie_break_stage = "random"
+                else:
+                    selected_idx = candidates_in_label[0]
+                    tie_break_stage = "sc"
+            else:
+                # Every tied candidate abstained (no extractable answer) -> pure
+                # uniform random draw among the tied candidates.
+                selected_idx = rng.choice(top_indices)
+                tie_break_stage = "random"
 
     return {
         "selected_idx": selected_idx,
         "scores": scores,
         "tie": tie,
         "tie_break_used": tie_break_used,
+        "abstentions": abstentions,
+        "tie_break_stage": tie_break_stage,
     }
 
 
@@ -385,10 +397,12 @@ def approval_diagnostics(approvals: Sequence[Mapping[str, Any]], n_candidates: i
     """Per-aspect approval rate and verdict parse rate.
 
     approval_rate is the fraction of an aspect's approvals with verdict is
-    True (unparseable verdicts count as non-approvals, same rule as
-    select_bon_candidate); aspects approving nearly every candidate
-    (>95%) are a sycophancy flag. parse_rate is the fraction with
-    verdict is not None.
+    True (unparseable verdicts count as non-approvals); this measures
+    verifier behaviour, so aspects approving nearly every candidate (>95%)
+    are a sycophancy flag regardless of how selection treats abstentions.
+    effective_approval_rate additionally counts verdict is None as an
+    approval, matching the rule select_bon_candidate actually uses. parse_rate
+    is the fraction with verdict is not None.
     """
     by_aspect: dict[str, list[Mapping[str, Any]]] = {}
     for approval in approvals:
@@ -398,9 +412,11 @@ def approval_diagnostics(approvals: Sequence[Mapping[str, Any]], n_candidates: i
     for aspect_id, aspect_approvals in by_aspect.items():
         n = len(aspect_approvals)
         n_approved = sum(1 for a in aspect_approvals if a["verdict"] is True)
+        n_effective = sum(1 for a in aspect_approvals if a["verdict"] is not False)
         n_parsed = sum(1 for a in aspect_approvals if a["verdict"] is not None)
         result[aspect_id] = {
             "approval_rate": n_approved / n if n else 0.0,
+            "effective_approval_rate": n_effective / n if n else 0.0,
             "parse_rate": n_parsed / n if n else 0.0,
             "n": n,
         }
@@ -425,22 +441,45 @@ def candidate_correctness(
     return [spec.score(value, ground_truth) for value in compare_values]
 
 
+def _precision_recall_f1(tp: int, fp: int, fn: int) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    precision = tp / (tp + fp) if (tp + fp) else None
+    recall = tp / (tp + fn) if (tp + fn) else None
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and (precision + recall) > 0
+        else None
+    )
+    return precision, recall, f1
+
+
 def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict:
     """Per-aspect verifier accuracy against ground truth, not just approval rate.
 
     `approval_diagnostics` only measures how often an aspect approves; this
-    measures whether it is right to approve, treating `verdict is True` as a
-    prediction that the candidate is actually correct
-    (`approval["candidate_correct"]`, attached per-approval by the caller via
-    `candidate_correctness`). Distinguishes a genuinely strong verifier from
-    a rubber stamp when approval_rate alone can't.
+    measures whether it is right to approve, treating a prediction of
+    "correct" as `approval["candidate_correct"]` (attached per-approval by
+    the caller via `candidate_correctness`). 
+
+    Two conventions for what counts as a "correct" prediction are reported,
+    matching the two rules used elsewhere in this module:
+      effective (primary) -- `verdict is not False`, i.e. True or None counts
+                              as predicting correct. Mirrors the selection
+                              rule in `select_bon_candidate`: an abstention is
+                              not rejection evidence, so it should not be
+                              scored as one here either.
+      strict (*_strict)    -- `verdict is True` only; an abstention is scored
+                              as predicting incorrect. Kept so a caller that wants to
+                              ignore abstentions entirely still can.
+                              
+    Precision/recall/f1 are None when undefined (no positive predictions, or
+    no correct candidates seen).
 
     Returns
     -------
     dict
-        Per aspect_id: precision, recall, f1, accuracy, n. precision/recall
-        (and therefore f1) are None when undefined (no approvals, or no
-        correct candidates seen).
+        Per aspect_id: precision, recall, f1, accuracy (effective rule);
+        precision_strict, recall_strict, f1_strict, accuracy_strict (strict
+        rule); n_abstain, abstain_rate; n.
     """
     by_aspect: dict[str, list[Mapping[str, Any]]] = {}
     for approval in approvals:
@@ -449,9 +488,15 @@ def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict
     result: dict[str, dict] = {}
     for aspect_id, aspect_approvals in by_aspect.items():
         tp = fp = fn = tn = 0
+        tp_s = fp_s = fn_s = tn_s = 0
+        n_abstain = 0
         for a in aspect_approvals:
-            predicted_correct = a["verdict"] is True
             actual_correct = a["candidate_correct"]
+            verdict = a["verdict"]
+            if verdict is None:
+                n_abstain += 1
+
+            predicted_correct = verdict is not False
             if predicted_correct and actual_correct:
                 tp += 1
             elif predicted_correct and not actual_correct:
@@ -460,18 +505,31 @@ def verifier_quality_diagnostics(approvals: Sequence[Mapping[str, Any]]) -> dict
                 fn += 1
             else:
                 tn += 1
+
+            predicted_correct_strict = verdict is True
+            if predicted_correct_strict and actual_correct:
+                tp_s += 1
+            elif predicted_correct_strict and not actual_correct:
+                fp_s += 1
+            elif not predicted_correct_strict and actual_correct:
+                fn_s += 1
+            else:
+                tn_s += 1
+
         n = len(aspect_approvals)
-        precision = tp / (tp + fp) if (tp + fp) else None
-        recall = tp / (tp + fn) if (tp + fn) else None
+        precision, recall, f1 = _precision_recall_f1(tp, fp, fn)
+        precision_s, recall_s, f1_s = _precision_recall_f1(tp_s, fp_s, fn_s)
         result[aspect_id] = {
             "precision": precision,
             "recall": recall,
-            "f1": (
-                2 * precision * recall / (precision + recall)
-                if precision is not None and recall is not None and (precision + recall) > 0
-                else None
-            ),
+            "f1": f1,
             "accuracy": (tp + tn) / n if n else 0.0,
+            "precision_strict": precision_s,
+            "recall_strict": recall_s,
+            "f1_strict": f1_s,
+            "accuracy_strict": (tp_s + tn_s) / n if n else 0.0,
+            "n_abstain": n_abstain,
+            "abstain_rate": n_abstain / n if n else 0.0,
             "n": n,
         }
     return result
