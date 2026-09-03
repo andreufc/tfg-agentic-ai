@@ -24,13 +24,8 @@ Design notes
 - Peak VRAM must be reset with reset_gpu_peak() immediately before each
   measured scope, or the counter reflects the global max since the last
   manual reset (including model load).
-- tokens_per_second measures end-to-end throughput (prefill + decode +
-  wrapper overhead), not pure decode rate. MAS and baseline are measured
-  identically so the ratio is a sound cross-protocol efficiency comparison
-  for the same model. A prefill-free "pure decode rate" metric was
-  prototyped but dropped: it's a per-model hardware constant that doesn't
-  vary with protocol, so it can't inform that tradeoff, and it adds real
-  per-token GPU-sync overhead for a number no experiment consumes.
+- tokens_per_second measures end-to-end throughput (prefill, decode and
+  wrapper overhead), so it is comparable across protocols on the same model.
 """
 
 from __future__ import annotations

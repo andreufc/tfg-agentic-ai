@@ -33,9 +33,13 @@ Provides:
     - overhead_difference_statistics:   Cluster-t CI for additive overhead (VRAM)
     - vram_statistics:                  Cluster-t CI on per-problem peak-VRAM means
 
-    Between-system comparison tests (deferred, not part of per-system scope):
-    - welch_t_test_metric:              Welch t-test on per-problem means
-    - mann_whitney_u_test_metric:       Rank-based distribution-free comparison
+    Paired between-system comparison tests:
+    - paired_t_test_metric:              Student-t test on matched problems
+    - wilcoxon_signed_rank_test_metric:  Distribution-free matched comparison
+
+    Independent-sample comparison tests:
+    - welch_t_test_metric:               Welch t-test on per-problem means
+    - mann_whitney_u_test_metric:        Rank-based independent comparison
 
 All functions expect data as NumPy arrays of shape (N, m) where
 N = number of problems and m = number of seeds (repetitions).
@@ -77,6 +81,8 @@ def per_problem_means(arr: np.ndarray) -> np.ndarray:
         raise ValueError(
             f"Expected 2-D array of shape (N, m), got shape {arr.shape}"
         )
+    if 0 in arr.shape:
+        raise ValueError(f"Expected non-empty shape (N, m), got shape {arr.shape}")
     return np.mean(arr, axis=1)
 
 
@@ -162,6 +168,21 @@ def _log_ratio_t_ci(
     log_r = np.log(np.asarray(ratios, dtype=float))
     lo_log, hi_log = _cluster_t_ci(log_r, alpha)
     return float(np.exp(lo_log)), float(np.exp(hi_log))
+
+
+def _paired_problem_means(
+    values_a: ArrayLike,
+    values_b: ArrayLike,
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """Validate matched metric matrices and reduce each to problem means."""
+    a = np.asarray(values_a, dtype=float)
+    b = np.asarray(values_b, dtype=float)
+    if a.ndim != 2 or b.ndim != 2:
+        raise ValueError("Both inputs must be 2-D arrays of shape (N, m).")
+    if a.shape != b.shape:
+        raise ValueError(f"Shape mismatch: values_a {a.shape} vs values_b {b.shape}.")
+    n_problems, n_seeds = a.shape
+    return per_problem_means(a), per_problem_means(b), n_problems, n_seeds
 
 
 # ---------------------------------------------------------------------------
@@ -662,25 +683,15 @@ def overhead_ratio_statistics(
         ci_lower, ci_upper, ci_method, alpha, n_problems, n_seeds,
         n_total, per_problem_ratios.  Optional: bca_ci (when bca_check=True).
     """
-    mas = np.asarray(values_mas, dtype=float)
-    base = np.asarray(values_base, dtype=float)
-    if mas.ndim != 2 or base.ndim != 2:
-        raise ValueError(
-            "Both inputs must be 2-D arrays of shape (N, m)."
-        )
-    if mas.shape != base.shape:
-        raise ValueError(
-            f"Shape mismatch: values_mas {mas.shape} vs values_base {base.shape}."
-        )
-
-    n_problems, n_seeds = mas.shape
-    base_means = per_problem_means(base)      # shape (N,)
+    mas_means, base_means, n_problems, n_seeds = _paired_problem_means(
+        values_mas, values_base
+    )
     if np.any(base_means <= 0.0):
         raise ValueError(
             "All per-problem baseline means must be > 0 to compute ratios."
         )
 
-    r_i = per_problem_means(mas) / base_means   # per-problem ratios
+    r_i = mas_means / base_means
 
     geometric_mean = float(np.exp(np.mean(np.log(r_i))))
     arithmetic_mean = float(np.mean(r_i))
@@ -734,17 +745,10 @@ def overhead_difference_statistics(
         Keys: mean_diff, ci_lower, ci_upper, ci_method,
         between_problem_std, per_problem_diffs, n_problems, n_seeds.
     """
-    mas = np.asarray(values_mas, dtype=float)
-    base = np.asarray(values_base, dtype=float)
-    if mas.ndim != 2 or base.ndim != 2:
-        raise ValueError("Both inputs must be 2-D arrays of shape (N, m).")
-    if mas.shape != base.shape:
-        raise ValueError(
-            f"Shape mismatch: values_mas {mas.shape} vs values_base {base.shape}."
-        )
-
-    n_problems, n_seeds = mas.shape
-    d_i = per_problem_means(mas) - per_problem_means(base)
+    mas_means, base_means, n_problems, n_seeds = _paired_problem_means(
+        values_mas, values_base
+    )
+    d_i = mas_means - base_means
 
     mean_diff = float(np.mean(d_i))
     ci_lower, ci_upper = _cluster_t_ci(d_i, alpha)
@@ -763,18 +767,87 @@ def overhead_difference_statistics(
 
 
 # ---------------------------------------------------------------------------
-# Between-system comparison tests (deferred, not per-system scope)
+# Between-system comparison tests
 # ---------------------------------------------------------------------------
+
+def paired_t_test_metric(
+    values_a: ArrayLike,
+    values_b: ArrayLike,
+) -> dict:
+    """Paired Student-t test on matched problem-level metric means.
+
+    Use this for protocol comparisons sharing the same problems and seeds.
+    The test is applied to the vector of per-problem differences, preserving
+    the pairing rather than treating the two systems as independent samples.
+    """
+    a, b, n_problems, n_seeds = _paired_problem_means(values_a, values_b)
+    if n_problems < 2:
+        raise ValueError("At least two matched problems are required for a paired t-test.")
+
+    differences = a - b
+    if float(np.ptp(differences)) == 0.0:
+        mean_diff = float(differences[0])
+        t_statistic = 0.0 if mean_diff == 0.0 else float(np.copysign(np.inf, mean_diff))
+        p_value = 1.0 if mean_diff == 0.0 else 0.0
+    else:
+        result = sp_stats.ttest_1samp(differences, popmean=0.0)
+        t_statistic, p_value = float(result.statistic), float(result.pvalue)
+    return {
+        "t_statistic": t_statistic,
+        "p_value": p_value,
+        "df": float(n_problems - 1),
+        "mean_a": float(np.mean(a)),
+        "mean_b": float(np.mean(b)),
+        "mean_diff": float(np.mean(differences)),
+        "n_problems": n_problems,
+        "n_seeds": n_seeds,
+        "significant_at_05": bool(p_value < 0.05),
+    }
+
+
+def wilcoxon_signed_rank_test_metric(
+    values_a: ArrayLike,
+    values_b: ArrayLike,
+    alternative: str = "two-sided",
+) -> dict:
+    """Distribution-free paired comparison on problem-level metric means.
+
+    Uses the Wilcoxon signed-rank test for matched protocols. If every
+    problem-level difference is zero, the exact null result is returned
+    directly because SciPy otherwise raises under its default zero handling.
+    """
+    a, b, n_problems, n_seeds = _paired_problem_means(values_a, values_b)
+    if n_problems < 2:
+        raise ValueError("At least two matched problems are required for Wilcoxon testing.")
+
+    differences = a - b
+    if np.all(differences == 0.0):
+        statistic, p_value = 0.0, 1.0
+    else:
+        result = sp_stats.wilcoxon(differences, alternative=alternative)
+        statistic, p_value = float(result.statistic), float(result.pvalue)
+
+    return {
+        "statistic": statistic,
+        "p_value": p_value,
+        "alternative": alternative,
+        "mean_a": float(np.mean(a)),
+        "mean_b": float(np.mean(b)),
+        "median_diff": float(np.median(differences)),
+        "n_problems": n_problems,
+        "n_seeds": n_seeds,
+        "significant_at_05": bool(p_value < 0.05),
+    }
 
 def welch_t_test_metric(
     per_problem_means_a: ArrayLike,
     per_problem_means_b: ArrayLike,
 ) -> dict:
-    """Welch t-test comparing per-problem means between two systems.
+    """Welch t-test for independent per-problem samples.
 
-    Between-system scope: compares two already-computed per-problem mean
-    vectors (e.g. MAS vs. baseline), unlike the per-system estimators
-    above which take a raw (N, m) matrix.
+    This is appropriate only when systems do not share problem instances.
+    For the matched protocol comparisons in this project, use
+    :func:`paired_t_test_metric` instead.
 
     Parameters
     ----------
@@ -821,10 +894,11 @@ def mann_whitney_u_test_metric(
     per_problem_means_b: ArrayLike,
     alternative: str = "two-sided",
 ) -> dict:
-    """Rank-based, distribution-free comparison between two systems.
+    """Rank-based, distribution-free test for independent samples.
 
-    Deferred scope: a between-system comparison test, not part of the
-    per-system estimation scope. Kept unchanged for backwards compatibility.
+    This is appropriate only when systems do not share problem instances.
+    For matched protocol comparisons, use
+    :func:`wilcoxon_signed_rank_test_metric` instead.
 
     Parameters
     ----------

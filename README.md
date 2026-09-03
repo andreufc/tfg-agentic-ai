@@ -5,7 +5,7 @@
 
 This thesis explores whether **multi-agent collaboration** (a *Society of Minds* approach) can improve the reasoning accuracy and reliability of **Small Language Models** (SLMs, ≤ 8B parameters), which often struggle with complex tasks under tight resource constraints.
 
-Specialised agents collaboratively solve tasks in **MATH-500** / **GSM8K** (mathematical reasoning) and **MMLU** (knowledge retrieval), measuring not just accuracy gains over single-agent inference but also the associated costs in latency, token consumption, and GPU memory — using rigorous cluster-corrected statistical methods throughout.
+Specialised agents collaboratively solve tasks in **GSM8K**, the level 1–4 subset of **MATH-500** (mathematical reasoning), and **MMLU** (knowledge retrieval). The evaluation records both accuracy and the associated latency, token consumption, and GPU memory, using cluster-corrected statistical methods throughout.
 
 **Tech stack:** LangChain (LCEL) for compositional agent calls · LangGraph for stateful collaboration graphs · W&B for experiment tracking · Kaggle T4 GPU (16 GB VRAM, `batch_size=1`).
 
@@ -20,7 +20,8 @@ tfg-agentic-ai/
 │   ├── baselines/                # v2.x — single-agent zero-shot / CoT baselines
 │   ├── self-consistency/         # v3.x — Self-Consistency (the L1 generation pass)
 │   ├── majority-voting/          # v4.x — L1 Majority Voting (replay over SC samples)
-│   └── bon-mav/                  # v5.x — L1 BoN-MAV (multi-aspect verification)
+│   ├── bon-mav/                  # v5.x — L1 BoN-MAV (multi-aspect verification)
+│   └── archive/                  # Never-executed or superseded notebook drafts
 ├── utils/                        # Shared Python library used by all notebooks
 │   ├── config.py                 # Secrets loader (local .env, Colab, Kaggle)
 │   ├── data.py                   # Dataset loading (GSM8K, MMLU, MATH-500)
@@ -50,6 +51,21 @@ Notebook naming convention:
 ```
 [Agentic] [GCED] v<major>.<minor>.<patch> [LangChain] [pub] - <Description> <Dataset>.ipynb
 ```
+
+### Notebook collection
+
+`notebooks/` contains the complete notebook record of the experiments run for this thesis: environment and evaluation setup, single-agent baselines, and the evaluated multi-agent systems. Executed notebooks retain their committed outputs when available, while `notebooks/archive/` keeps never-executed or superseded drafts separate from the experimental evidence.
+
+See [`notebooks/README.md`](notebooks/README.md) for the detailed folder guide, status conventions, and run instructions.
+
+- **`setup/`** — early v1.x end-to-end templates used to validate the LangChain evaluation harness, instrumentation, W&B logging, and benchmark workflow. The v1.1.x notebooks are retained as historical runs and may no longer be compatible with the current utility API.
+- **`baselines/`** — v2.x single-agent zero-shot and Chain-of-Thought baselines across GSM8K, MATH-500, and MMLU, including the model-family comparisons used as references for the collaborative protocols.
+- **`self-consistency/`** — v3.x Self-Consistency experiments and parameter sweeps. These runs generate and persist the candidate responses later replayed by the ensemble protocols.
+- **`majority-voting/`** — v4.x L1 Majority Voting experiments over homogeneous and heterogeneous ensembles, evaluated on MATH-500 and MMLU.
+- **`bon-mav/`** — v5.x Best-of-N with Model-as-Verifier experiments, where independent aspect verifiers score persisted candidates before final selection.
+- **`archive/`** — notebook drafts that were never executed or were superseded before becoming part of the thesis evidence. See [`notebooks/archive/README.md`](notebooks/archive/README.md) for the inventory and reasons.
+
+The original dual-benchmark Gemma-4 notebooks `v2.4.0` and `v2.4.1` were executed on Kaggle: GSM8K completed, but the session reached Kaggle's 12-hour limit during MMLU, so the executed notebook outputs were never committed to GitHub. The corresponding `[FIX v2.4.0]` and `[FIX v2.4.1]` notebooks rerun only the unfinished MMLU evaluation.
 
 ---
 
@@ -101,7 +117,7 @@ Three secrets are needed: `HF_TOKEN` (Hugging Face read-access token), `WANDB_AP
 - **Kaggle:** add the three as kernel secrets via **Add-ons → Secrets** and enable each for the notebook.
 - **Colab:** add the three as Colab Secrets (🔑 icon in the sidebar).
 
-`utils/config.load_env` picks the right backend automatically based on where the code is running.
+Each notebook detects its runtime and calls `utils.config.load_env` with the corresponding secrets backend.
 
 ### 3. Install dependencies
 
@@ -129,8 +145,8 @@ Google Colab is also supported but is not the platform the experiments were exec
 
 | Module | Purpose |
 |---|---|
-| `utils.config` | Load secrets from `.env` (local), Colab userdata, or Kaggle Secrets |
-| `utils.data` | Load & subsample GSM8K / MMLU / MATH-500 with standardised columns |
+| `utils.config` | Load secrets from `.env` locally, Colab userdata or Kaggle Secrets in experiments |
+| `utils.data` | Load & subsample GSM8K, MMLU and the level 1–4 MATH-500 subset with standardised columns |
 | `utils.models` | Load HF models — NF4 4-bit (bitsandbytes) for most families, or the native compressed-tensors w4a16 path for the pre-quantized Gemma-4 QAT checkpoints |
 | `utils.registry` | Single source of truth for `model_key` → HF repo id, run names and artifact names (stdlib only, importable without the GPU stack) |
 | `utils.ensembles` | Ensemble rosters E1–E7 and seeded slot sampling over persisted SC generations |
@@ -142,7 +158,7 @@ Google Colab is also supported but is not the platform the experiments were exec
 | `utils.instrumentation` | Count input/output tokens; measure GPU peak VRAM; compute throughput (tokens/s) |
 | `utils.warmup` | Run throwaway generations to trigger CUDA/cuBLAS kernel compilation before timed measurements |
 | `utils.persistence` | Persist full generation text + metrics as a JSONL W&B artifact and retrieve it downstream with real producer→consumer lineage |
-| `utils.statistics` | Cluster-corrected estimators: accuracy (Student-t CI), latency/tokens (BCa bootstrap), overhead ratios (log-space t), VRAM (Student-t); between-system Welch t-test and Mann-Whitney U |
+| `utils.statistics` | Cluster-corrected estimators: accuracy (Student-t CI), latency/tokens (BCa bootstrap), overhead ratios (log-space t), VRAM (Student-t); paired Student-t and Wilcoxon comparisons, plus independent-sample tests when needed |
 | `utils.logging_utils` | Initialise & log metrics to W&B runs |
 
 ---

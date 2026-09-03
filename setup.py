@@ -1,20 +1,18 @@
 """
-setup.py — Colab / Kaggle bootstrap script.
+setup.py — Kaggle secrets bootstrap script.
 
-Run this cell at the top of every Colab or Kaggle notebook to install
-dependencies and mount the repository:
+After cloning the repository and installing its dependencies in a Kaggle
+notebook, run:
 
-    !git clone https://github.com/<user>/tfg-agentic-ai.git
-    %cd tfg-agentic-ai
-    !pip install -q -r requirements.txt
-
-    import setup  # loads secrets + logs into W&B
+    import setup  # loads secrets
 """
+
+import os
 
 from utils.config import load_env
 
-# Load secrets from Colab userdata, Kaggle Secrets, or .env
-load_env()
+# Load Kaggle Secrets in a kernel, or a local .env during development.
+load_env("kaggle" if "KAGGLE_KERNEL_RUN_TYPE" in os.environ else "local")
 
 print("🚀 Setup complete — secrets loaded, ready to go!")
 

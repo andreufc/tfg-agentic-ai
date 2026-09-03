@@ -22,8 +22,6 @@ Connection to the project WPs
 
 from __future__ import annotations
 
-from typing import Optional
-
 GENERATIONS_ARTIFACT_PREFIX = "sc-generations"
 MATRICES_ARTIFACT_PREFIX = "evaluation-matrices"
 
