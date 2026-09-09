@@ -545,7 +545,8 @@ def per_problem_av_metrics(
     Reduces one problem's flat (candidate x aspect) approvals to one row
     per AV label, averaged -- never summed -- over the candidates that AV
     verified in this problem. "accuracy" reuses verifier_quality_diagnostics'
-    point-estimate rule scoped to a single problem instead of a whole run.
+    effective point-estimate rule scoped to a single problem instead of a
+    whole run: an abstention (`None`) is treated as predicting correct.
     """
     by_label: dict[str, list[Mapping[str, Any]]] = {}
     for approval in approvals:
@@ -558,7 +559,9 @@ def per_problem_av_metrics(
             "latency_s": sum(a["latency_s"] for a in items) / n,
             "output_tokens": sum(a["output_tokens"] for a in items) / n,
             "accuracy": sum(
-                1 for a in items if (a["verdict"] is True) == candidate_correct[a["candidate_idx"]]
+                1
+                for a in items
+                if (a["verdict"] is not False) == candidate_correct[a["candidate_idx"]]
             ) / n,
         }
     return result
