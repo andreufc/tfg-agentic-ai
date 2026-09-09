@@ -144,17 +144,18 @@ def build_majority_voting_graph(
 ) -> CompiledStateGraph:
     """Build the Majority Voting graph: START -> gen_* -> aggregate -> END.
 
-    One <agent_id> node per spec (live or replay), called sequentially
-    in-process via synchronous invoke() (a caller may still pre-load every
-    agent's model together first for a live, co-resident ensemble).
+    Problems are submitted one at a time and the reported statistics are
+    calculated under a sequential-execution interpretation. LangGraph may
+    still schedule independent nodes for the same problem concurrently, so
+    this docstring does not promise that every agent call is serialized.
     aggregate fans in samples, votes, and composes metrics.
 
     Parameters
     ----------
     agent_specs : sequence of AgentSpec
-        One per graph node. Order determines node names and, since sample
-        fan-in follows node-addition order under a synchronous invoke(),
-        the index a vote's winner_idx refers to.
+        One per graph node. Order determines node names and the index a
+        vote's winner_idx refers to; independent nodes may be scheduled
+        concurrently by the graph runtime.
     benchmark_spec : BenchmarkSpec
         The benchmark's extraction/equivalence rule (e.g.
         utils.voting.MATH500_SPEC), used to group this graph's own

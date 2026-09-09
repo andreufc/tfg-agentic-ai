@@ -407,10 +407,10 @@ def compose_generation_metrics(
     Each call is a persisted generation record, an `AgentSample` (MAJ
     candidates), or an `Approval` (BoN-MAV verifier calls); all three carry
     `model_key` plus the same metric fields, so one function serves every
-    protocol. Latency and token counts always sum across every call, the
-    honest total wall time / token spend, whether the calls ran sequentially
-    (SC, one resident model) or as a heterogeneous ensemble (MAJ/BoN-MAV,
-    several models resident at once).
+    protocol. Latency and token counts always sum across every call. The
+    resulting latency is a sequential-execution interpretation of the
+    calls, not a guarantee that independent agents for one problem were
+    physically serialized by the graph runtime.
 
     Parameters
     ----------
@@ -419,8 +419,8 @@ def compose_generation_metrics(
     tokens_per_s_rule : {"recomputed", "mean"}
         The one axis that genuinely differs by protocol. `"recomputed"`
         (default) computes `sum(output_tokens) / sum(latency_s)`, the
-        sustained rate of one resident model working through several calls
-        in sequence (SC's story). `"mean"` averages each call's own rate:
+        sequentially interpreted rate of one resident model working through
+        several calls (SC's story). `"mean"` averages each call's own rate:
         for a heterogeneous ensemble (MAJ/BoN-MAV) there is no shared
         per-token cost, so summing totals would let one slow model drag
         down a fast one's rate.
@@ -428,9 +428,10 @@ def compose_generation_metrics(
         How per-call `gpu_peak_mb` values combine into one ensemble-level
         peak; picking the wrong one silently mis-measures VRAM.
         `"sum_per_model"` (default) sums, over distinct `model_key`, that
-        model's max per-call peak; valid only when each call was measured
-        with a single model resident (replayed records, or one-at-a-time
-        sequential runs). `"coresident_peak"` takes a single max over every
+        model's max per-call peak; this is the sequential interpretation used
+        for replayed records and intended one-at-a-time calls, not a guarantee
+        that the graph runtime serialized every independent node.
+        `"coresident_peak"` takes a single max over every
         call's `gpu_peak_mb`, for calls from models genuinely loaded
         together, since each such peak already reflects the whole
         co-resident footprint and summing them would over-count.
